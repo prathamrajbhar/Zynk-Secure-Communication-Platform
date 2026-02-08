@@ -1,0 +1,302 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Platform {
+  web
+  ios
+  android
+  desktop
+}
+
+enum ConversationType {
+  one_to_one
+  group
+}
+
+enum EncryptionType {
+  e2ee
+  standard
+}
+
+enum MessageType {
+  text
+  image
+  file
+  audio
+  video
+  location
+  contact
+}
+
+enum MessageStatus {
+  sent
+  delivered
+  read
+  failed
+}
+
+enum ParticipantRole {
+  member
+  admin
+  moderator
+}
+
+enum CallType {
+  audio
+  video
+}
+
+enum CallStatus {
+  initiated
+  ringing
+  in_progress
+  ended
+  missed
+  declined
+}
+
+model User {
+  id                String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  username          String                    @unique @db.VarChar(64)
+  password_hash     String                    @db.VarChar(255)
+  public_key        String?
+  created_at        DateTime                  @default(now()) @db.Timestamp(6)
+  updated_at        DateTime                  @default(now()) @db.Timestamp(6)
+  
+  profile           UserProfile?
+  devices           Device[]
+  sessions          Session[]
+  participants      ConversationParticipant[]
+  messages          Messages[]
+  groupsCreated     Group[]                   @relation("GroupsCreated")
+  groupMembers      GroupMember[]             @relation("UserGroupMembers")
+  groupsInvited     GroupMember[]             @relation("InvitedBy")
+  files             File[]
+  callsInitiated    Call[]                    @relation("CallsInitiated")
+  callParticipations CallParticipant[]
+  contacts          Contact[]                 @relation("UserContacts")
+  contactOf         Contact[]                 @relation("ContactOf")
+
+  @@map("users")
+  @@index([username], map: "idx_users_username")
+}
+
+model UserProfile {
+  user_id          String   @id @db.Uuid
+  display_name     String?  @db.VarChar(255)
+  avatar_url       String?
+  bio              String?
+  last_seen_at     DateTime? @db.Timestamp(6)
+  privacy_settings Json     @default("{\"show_last_seen\": true, \"show_online_status\": true, \"allow_read_receipts\": true, \"allow_proximity_discovery\": true}")
+  created_at       DateTime @default(now()) @db.Timestamp(6)
+  updated_at       DateTime @default(now()) @db.Timestamp(6)
+  
+  user             User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("user_profiles")
+}
+
+model Device {
+  id                 String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String     @db.Uuid
+  device_name        String?    @db.VarChar(255)
+  device_fingerprint String     @unique @db.VarChar(64)
+  public_key         String?
+  push_token         String?
+  platform           Platform   @default(web)
+  last_active_at     DateTime?  @db.Timestamp(6)
+  created_at         DateTime   @default(now()) @db.Timestamp(6)
+  
+  user               User       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sessions           Session[]
+
+  @@map("devices")
+  @@index([device_fingerprint], map: "idx_devices_fingerprint")
+  @@index([user_id], map: "idx_devices_user_id")
+}
+
+model Session {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String   @db.Uuid
+  device_id          String   @db.Uuid
+  session_token      String   @unique @db.VarChar(512)
+  refresh_token      String   @unique @db.VarChar(512)
+  expires_at         DateTime @db.Timestamp(6)
+  refresh_expires_at DateTime @db.Timestamp(6)
+  created_at         DateTime @default(now()) @db.Timestamp(6)
+  last_used_at       DateTime @default(now()) @db.Timestamp(6)
+  
+  user               User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device             Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("sessions")
+  @@index([session_token], map: "idx_sessions_token")
+  @@index([user_id], map: "idx_sessions_user")
+}
+
+model Conversation {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type            ConversationType          @default(one_to_one)
+  encryption_type EncryptionType            @default(e2ee)
+  created_at      DateTime                  @default(now()) @db.Timestamp(6)
+  updated_at      DateTime                  @default(now()) @db.Timestamp(6)
+  
+  participants    ConversationParticipant[]
+  messages        Messages[]
+  group           Group?
+  files           File[]
+  calls           Call[]
+
+  @@map("conversations")
+  @@index([updated_at(sort: Desc)], map: "idx_conversations_updated")
+}
+
+model ConversationParticipant {
+  conversation_id String          @db.Uuid
+  user_id         String          @db.Uuid
+  role            ParticipantRole? @default(member)
+  joined_at       DateTime        @default(now()) @db.Timestamp(6)
+  last_read_at    DateTime?       @db.Timestamp(6)
+  
+  conversation    Conversation    @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user            User            @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([conversation_id, user_id])
+  @@map("conversation_participants")
+  @@index([conversation_id], map: "idx_participants_conversation")
+  @@index([user_id], map: "idx_participants_user")
+}
+
+model Messages {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversation_id   String        @db.Uuid
+  sender_id         String        @db.Uuid
+  encrypted_content String
+  content_hash      String?       @db.VarChar(64)
+  message_type      MessageType   @default(text)
+  metadata          Json?
+  status            MessageStatus @default(sent)
+  expires_at        DateTime?     @db.Timestamp(6)
+  created_at        DateTime      @default(now()) @db.Timestamp(6)
+  edited_at         DateTime?     @db.Timestamp(6)
+  deleted_at        DateTime?     @db.Timestamp(6)
+  
+  conversation      Conversation  @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender            User          @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("messages")
+  @@index([conversation_id, created_at(sort: Desc)], map: "idx_messages_conversation")
+  @@index([sender_id], map: "idx_messages_sender")
+}
+
+model Group {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String          @db.VarChar(255)
+  description     String?
+  avatar_url      String?
+  conversation_id String?         @unique @db.Uuid
+  max_members     Int?            @default(256)
+  created_by      String          @db.Uuid
+  created_at      DateTime        @default(now()) @db.Timestamp(6)
+  updated_at      DateTime        @default(now()) @db.Timestamp(6)
+  
+  conversation    Conversation?   @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  creator         User            @relation("GroupsCreated", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  members         GroupMember[]
+
+  @@map("groups")
+  @@index([created_by], map: "idx_groups_created_by")
+}
+
+model GroupMember {
+  group_id      String          @db.Uuid
+  user_id       String          @db.Uuid
+  role          ParticipantRole @default(member)
+  joined_at     DateTime        @default(now()) @db.Timestamp(6)
+  invited_by    String?         @db.Uuid
+  
+  group         Group           @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user          User            @relation("UserGroupMembers", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  inviter       User?           @relation("InvitedBy", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([group_id, user_id])
+  @@map("group_members")
+  @@index([user_id], map: "idx_group_members_user")
+}
+
+model File {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  uploader_id     String        @db.Uuid
+  conversation_id String?       @db.Uuid
+  filename        String        @db.VarChar(255)
+  file_size       BigInt
+  mime_type       String?       @db.VarChar(100)
+  storage_path    String
+  content_hash    String?       @db.VarChar(64)
+  thumbnail_path  String?
+  metadata        Json?
+  expires_at      DateTime?     @db.Timestamp(6)
+  created_at      DateTime      @default(now()) @db.Timestamp(6)
+  deleted_at      DateTime?     @db.Timestamp(6)
+  
+  conversation    Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  uploader        User          @relation(fields: [uploader_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("files")
+  @@index([conversation_id], map: "idx_files_conversation")
+  @@index([uploader_id], map: "idx_files_uploader")
+}
+
+model Call {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  initiator_id      String            @db.Uuid
+  call_type         CallType
+  status            CallStatus        @default(initiated)
+  conversation_id   String?           @db.Uuid
+  started_at        DateTime?         @db.Timestamp(6)
+  ended_at          DateTime?         @db.Timestamp(6)
+  duration_seconds  Int?
+  created_at        DateTime          @default(now()) @db.Timestamp(6)
+  
+  conversation      Conversation?     @relation(fields: [conversation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  initiator         User              @relation("CallsInitiated", fields: [initiator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  participants      CallParticipant[]
+
+  @@map("calls")
+  @@index([initiator_id], map: "idx_calls_initiator")
+}
+
+model CallParticipant {
+  call_id   String    @db.Uuid
+  user_id   String    @db.Uuid
+  joined_at DateTime? @db.Timestamp(6)
+  left_at   DateTime? @db.Timestamp(6)
+  
+  call      Call      @relation(fields: [call_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user      User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([call_id, user_id])
+  @@map("call_participants")
+  @@index([user_id], map: "idx_call_participants_user")
+}
+
+model Contact {
+  user_id    String   @db.Uuid
+  contact_id String   @db.Uuid
+  nickname   String?  @db.VarChar(255)
+  blocked    Boolean? @default(false)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  
+  user       User     @relation("UserContacts", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact    User     @relation("ContactOf", fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([user_id, contact_id])
+  @@map("contacts")
+  @@index([user_id], map: "idx_contacts_user")
+  @@index([contact_id], map: "idx_contacts_contact")
+}
