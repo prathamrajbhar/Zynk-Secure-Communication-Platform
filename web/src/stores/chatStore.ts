@@ -386,7 +386,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const existing = state.messages[convId] || [];
 
       // Check if this is a confirmation of an optimistic message
-      const tempId = (message.metadata as { temp_id?: string })?.temp_id || (message as any).temp_id;
+      const tempId = (message.metadata as { temp_id?: string })?.temp_id || (message as Message & { temp_id?: string }).temp_id;
 
       // Robust deduplication: Check if we already have this message by ID or tempId
       const isDuplicate = existing.some(m =>
@@ -551,33 +551,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!socket || !isConnected()) return;
 
     const now = Date.now();
-    const state = get() as any;
+    const state = get() as ChatState & { isTypingSent?: boolean; lastTypingSent?: number };
 
     if (isTyping) {
       // Throttle typing:start to once every 3 seconds
-      if (!state.isTypingSent || now - state.lastTypingSent > 3000) {
+      if (!state.isTypingSent || now - (state.lastTypingSent ?? 0) > 3000) {
         socket.emit(SOCKET_EVENTS.TYPING_START, { conversation_id: conversationId });
-        set({ lastTypingSent: now, isTypingSent: true } as any);
+        set({ lastTypingSent: now, isTypingSent: true } as Partial<ChatState & { lastTypingSent: number; isTypingSent: boolean }>);
       }
     } else if (state.isTypingSent) {
       socket.emit(SOCKET_EVENTS.TYPING_STOP, { conversation_id: conversationId });
-      set({ isTypingSent: false } as any);
+      set({ isTypingSent: false } as Partial<ChatState & { isTypingSent: boolean }>);
     }
   },
 
   startConversation: async (recipientId: string) => {
+    // Defensive validation - prevent empty body requests
+    if (!recipientId || typeof recipientId !== 'string' || recipientId.trim() === '') {
+      console.error('[chatStore.startConversation] Invalid recipientId:', recipientId);
+      throw new Error('Invalid recipient ID');
+    }
+
     // Check if conversation already exists
     const existing = get().conversations.find(c =>
       c.type === 'one_to_one' && c.other_user?.user_id === recipientId
     );
     if (existing) return existing.id;
 
-    // Send a starting message to create conversation
+    // Create or find conversation via conversations endpoint
     try {
-      const res = await api.post('/messages', {
+      const res = await api.post('/messages/conversations', {
         recipient_id: recipientId,
-        encrypted_content: '👋',
-        message_type: 'text',
       });
       await get().fetchConversations();
       return res.data.conversation_id;

@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import prisma from '../db/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { config } from '../config';
+import sharp from 'sharp';
 
 const router = Router();
 
@@ -39,9 +40,40 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
     const { conversation_id } = req.body;
     const file = req.file;
 
-    // Calculate file hash
-    const fileBuffer = fs.readFileSync(file.path);
-    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    // Calculate file hash using streaming to avoid loading entire file into memory
+    const hash = await new Promise<string>((resolve, reject) => {
+      const hashStream = crypto.createHash('sha256');
+      const fileStream = fs.createReadStream(file.path);
+      fileStream.on('data', (chunk) => hashStream.update(chunk));
+      fileStream.on('end', () => resolve(hashStream.digest('hex')));
+      fileStream.on('error', reject);
+    });
+
+    // Generate thumbnail for images
+    let thumbnailFilename: string | null = null;
+    if (file.mimetype.startsWith('image/')) {
+      try {
+        thumbnailFilename = `thumb_${file.filename}`;
+        const thumbPath = path.join(thumbnailDir, thumbnailFilename);
+        await sharp(file.path)
+          .resize(200, 200, { fit: 'cover', withoutEnlargement: true })
+          .jpeg({ quality: 75 })
+          .toFile(thumbPath);
+
+        // Also compress original if > 1MB and is an image
+        if (file.size > 1024 * 1024) {
+          const compressedPath = file.path + '.compressed';
+          await sharp(file.path)
+            .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 85 })
+            .toFile(compressedPath);
+          fs.renameSync(compressedPath, file.path);
+        }
+      } catch (thumbErr) {
+        console.error('Thumbnail generation failed:', thumbErr);
+        thumbnailFilename = null;
+      }
+    }
 
     const result = await prisma.file.create({
       data: {
@@ -52,6 +84,7 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
         mime_type: file.mimetype,
         storage_path: file.filename,
         content_hash: hash,
+        thumbnail_path: thumbnailFilename,
         metadata: { original_name: file.originalname },
       }
     });
@@ -62,6 +95,7 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
       file_size: Number(result.file_size),
       mime_type: result.mime_type,
       content_hash: result.content_hash,
+      thumbnail_path: thumbnailFilename,
       created_at: result.created_at,
     });
   } catch (error) {
@@ -75,11 +109,21 @@ router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Resp
   try {
     const file = await prisma.file.findUnique({
       where: { id: req.params.fileId, deleted_at: null },
-      select: { filename: true, storage_path: true, mime_type: true }
+      select: { filename: true, storage_path: true, mime_type: true, conversation_id: true }
     });
 
     if (!file) {
       return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Verify requester has access to the file's conversation
+    if (file.conversation_id) {
+      const participant = await prisma.conversationParticipant.findFirst({
+        where: { conversation_id: file.conversation_id, user_id: req.userId! }
+      });
+      if (!participant) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
     }
 
     const filePath = path.join(uploadDir, file.storage_path);
@@ -183,16 +227,36 @@ router.get('/conversation/:conversationId', authenticate, async (req: AuthReques
   }
 });
 
-// Serve uploaded files statically
+// Serve uploaded files statically (with path traversal protection)
 router.get('/serve/:filename', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const filePath = path.join(uploadDir, req.params.filename);
+    const filePath = path.resolve(uploadDir, req.params.filename);
+    if (!filePath.startsWith(path.resolve(uploadDir))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'File not found' });
     }
     return res.sendFile(filePath);
   } catch (error) {
     return res.status(500).json({ error: 'Failed to serve file' });
+  }
+});
+
+// Serve thumbnails (with path traversal protection)
+router.get('/thumbnail/:filename', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const filePath = path.resolve(thumbnailDir, req.params.filename);
+    if (!filePath.startsWith(path.resolve(thumbnailDir))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Thumbnail not found' });
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(filePath);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to serve thumbnail' });
   }
 });
 

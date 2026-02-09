@@ -1,232 +1,363 @@
-'use client';
-
-import { useState } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, Conversation } from '@/stores/chatStore';
 import { useUIStore } from '@/stores/uiStore';
-import { formatTime, getInitials, truncate } from '@/lib/utils';
+import { formatTime, getInitials, formatLastMessage } from '@/lib/utils';
 import {
   MessageCircle, Search, Settings, Plus, Users, LogOut,
-  Moon, Sun, Shield, Phone
+  Moon, Sun, MoreVertical, X, File as FileIcon, Image as ImageIcon,
+  MessageSquare
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import ConnectionIndicator from './ConnectionIndicator';
 import CallLogsPanel from './CallLogsPanel';
+import ContactsPanel from './ContactsPanel';
+import api from '@/lib/api';
+import toast from 'react-hot-toast';
+import Fuse from 'fuse.js';
+
+const avatarColors = [
+  'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
+  'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500',
+];
+function getAvatarColor(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
+  return avatarColors[Math.abs(h) % avatarColors.length];
+}
 
 export default function Sidebar() {
   const { user, logout } = useAuthStore();
   const { conversations, activeConversation, setActiveConversation, onlineUsers } = useChatStore();
   const { theme, toggleTheme, setShowSettings, setShowNewChat, setShowGroupCreate, setShowProfile, sidebarTab, setSidebarTab } = useUIStore();
   const [search, setSearch] = useState('');
+  const [showMenu, setShowMenu] = useState(false);
+  const [searchPeople, setSearchPeople] = useState<{ user_id: string; username: string; display_name?: string; bio?: string }[]>([]);
+  const [searchGlobalMessages, setSearchGlobalMessages] = useState<{ message_id: string; conversation_id: string; snippet: string; message_type: string; sender_username: string; sender_display_name?: string; created_at: string }[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isStartingChat, setIsStartingChat] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const filteredConversations = conversations.filter(conv => {
-    if (!search) return true;
-    const name = conv.type === 'one_to_one'
-      ? (conv.other_user?.display_name || conv.other_user?.username || '')
-      : (conv.group_info?.name || '');
-    return name.toLowerCase().includes(search.toLowerCase());
-  });
+  const fuseConversations = useMemo(() => new Fuse(conversations, {
+    keys: ['other_user.display_name', 'other_user.username', 'group_info.name', 'last_message'],
+    threshold: 0.4, distance: 100,
+  }), [conversations]);
 
-  const handleLogout = async () => {
-    await logout();
-    window.location.href = '/login';
+  const filteredConversations = useMemo(() => {
+    if (!search) return conversations;
+    return fuseConversations.search(search).map(result => result.item);
+  }, [search, conversations, fuseConversations]);
+
+  useEffect(() => {
+    if (!search || search.length < 2) { setSearchPeople([]); setSearchGlobalMessages([]); return; }
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const [peopleRes, messagesRes] = await Promise.all([
+          api.get(`/users/search?query=${search}`),
+          api.post('/messages/search', { query: search })
+        ]);
+        const existingUserIds = new Set(conversations.map(c => c.other_user?.user_id).filter(Boolean));
+        setSearchPeople((peopleRes.data.users || []).filter((u: { user_id: string }) => !existingUserIds.has(u.user_id)));
+        setSearchGlobalMessages(messagesRes.data.results || []);
+      } catch (error) { console.error('Search failed:', error); }
+      finally { setIsSearching(false); }
+    }, 400);
+    return () => { if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
+  }, [search, conversations]);
+
+  const searchFiles = useMemo(() => searchGlobalMessages.filter(m => m.message_type === 'file' || m.message_type === 'image'), [searchGlobalMessages]);
+  const searchTextMessages = useMemo(() => searchGlobalMessages.filter(m => m.message_type === 'text'), [searchGlobalMessages]);
+
+  const handleStartConversation = async (userId: string) => {
+    // Defensive validation - prevent empty body requests
+    if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+      console.error('[Sidebar.handleStartConversation] Invalid userId:', userId);
+      toast.error('Invalid user selected');
+      return;
+    }
+    // Prevent rapid double-clicks
+    if (isStartingChat) return;
+    setIsStartingChat(true);
+    try {
+      const convId = await useChatStore.getState().startConversation(userId);
+      setActiveConversation(convId);
+      setSearch('');
+    } catch { toast.error('Failed to start conversation'); }
+    finally { setIsStartingChat(false); }
   };
+
+  const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+
+  const handleLogout = async () => { await logout(); window.location.href = '/login'; };
 
   return (
     <div className={cn(
-      'h-full flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--border)]',
-      'w-full lg:w-80 lg:min-w-[320px]',
+      'h-full flex flex-col bg-[var(--sidebar-bg)] relative',
+      'w-full lg:w-[360px] lg:min-w-[320px] lg:max-w-[380px]',
+      'border-r border-[var(--border)]',
       activeConversation ? 'hidden lg:flex' : 'flex'
     )}>
-      {/* Header */}
-      <div className="p-4 border-b border-[var(--border)]">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Shield className="w-6 h-6 text-zynk-500" />
-            <span className="text-lg font-bold text-[var(--text-primary)]">Zynk</span>
-            <ConnectionIndicator />
-          </div>
-          <div className="flex items-center gap-1">
-            <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]" title="Toggle theme">
-              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
-            <button onClick={() => setShowSettings(true)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]" title="Settings">
-              <Settings className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input-field pl-9 py-2 text-sm"
-            placeholder="Search conversations"
-          />
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex border-b border-[var(--border)]">
-        <button
-          onClick={() => setSidebarTab('chats')}
-          className={cn(
-            'flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium transition-colors border-b-2',
-            sidebarTab === 'chats'
-              ? 'text-zynk-500 border-zynk-500'
-              : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-primary)]'
-          )}
-        >
-          <MessageCircle className="w-4 h-4" />
-          Chats
-        </button>
-        <button
-          onClick={() => setSidebarTab('calls')}
-          className={cn(
-            'flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium transition-colors border-b-2',
-            sidebarTab === 'calls'
-              ? 'text-zynk-500 border-zynk-500'
-              : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-primary)]'
-          )}
-        >
-          <Phone className="w-4 h-4" />
-          Calls
-        </button>
-      </div>
-
-      {/* Action buttons - Only show for chats tab */}
-      {sidebarTab === 'chats' && (
-        <div className="flex gap-2 p-3 border-b border-[var(--border)]">
-          <button
-            onClick={() => setShowNewChat(true)}
-            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-zynk-600 hover:bg-zynk-700 text-white text-sm font-medium transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            New Chat
-          </button>
-          <button
-            onClick={() => setShowGroupCreate(true)}
-            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--border)] text-[var(--text-primary)] text-sm font-medium transition-colors"
-          >
-            <Users className="w-4 h-4" />
-            New Group
-          </button>
-        </div>
-      )}
-
-      {/* Content area - conditionally render based on tab */}
-      {sidebarTab === 'chats' ? (
-        <div className="flex-1 overflow-y-auto">
-          {filteredConversations.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
-              <MessageCircle className="w-12 h-12 mb-3 opacity-30" />
-              <p className="text-sm">No conversations yet</p>
-              <p className="text-xs mt-1">Start a new chat to begin</p>
+      {/* ── Header ── */}
+      <div className="px-4 py-3 flex items-center justify-between flex-shrink-0 sidebar-header">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setShowProfile(true)} className="relative group">
+            <div className={cn(
+              'w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold',
+              'transition-transform duration-150 group-hover:scale-105',
+              getAvatarColor(user?.username || 'U')
+            )}>
+              {getInitials(user?.display_name || user?.username || '?')}
             </div>
-          ) : (
-            filteredConversations.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                isActive={activeConversation === conv.id}
-                isOnline={conv.other_user ? onlineUsers.has(conv.other_user.user_id) : false}
-                onClick={() => setActiveConversation(conv.id)}
-              />
-            ))
+          </button>
+          <div>
+            <h1 className="text-sm font-extrabold text-[var(--text-primary)] tracking-tight leading-none">Zynk</h1>
+          </div>
+        </div>
+        <div className="flex items-center gap-0.5">
+          <button onClick={toggleTheme} className="btn-icon" title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>
+            {theme === 'dark' ? <Sun className="w-[18px] h-[18px]" /> : <Moon className="w-[18px] h-[18px]" />}
+          </button>
+          <div className="relative">
+            <button onClick={() => setShowMenu(!showMenu)} className="btn-icon">
+              <MoreVertical className="w-[18px] h-[18px]" />
+            </button>
+            {showMenu && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setShowMenu(false)} />
+                <div className="absolute right-0 top-full mt-1 z-40 bg-[var(--bg-elevated)] rounded-xl shadow-overlay border border-[var(--border)] py-1 min-w-[200px] animate-scale-in">
+                  {[
+                    { icon: Plus, label: 'New chat', action: () => setShowNewChat(true), color: 'text-[var(--accent)]' },
+                    { icon: Users, label: 'New group', action: () => setShowGroupCreate(true), color: 'text-[var(--accent)]' },
+                    { icon: Settings, label: 'Settings', action: () => setShowSettings(true), color: 'text-[var(--accent)]' },
+                  ].map(item => (
+                    <button key={item.label} onClick={() => { item.action(); setShowMenu(false); }}
+                      className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors">
+                      <item.icon className={cn('w-4 h-4', item.color)} /> {item.label}
+                    </button>
+                  ))}
+                  <div className="my-1 mx-3 h-px bg-[var(--separator)]" />
+                  <button onClick={() => { handleLogout(); setShowMenu(false); }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-medium text-[var(--danger)] hover:bg-red-500/5 transition-colors">
+                    <LogOut className="w-4 h-4" /> Log out
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Search ── */}
+      <div className="px-3 pb-2 flex-shrink-0">
+        <div className="flex items-center gap-2 bg-[var(--bg-wash)] rounded-xl px-3 py-2 transition-all duration-200 focus-within:bg-[var(--bg-surface)] focus-within:ring-2 focus-within:ring-[var(--accent-ring)]">
+          <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none"
+            placeholder="Search chats, people, messages..." />
+          {isSearching && <div className="w-3.5 h-3.5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />}
+          {search && !isSearching && (
+            <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors p-0.5">
+              <X className="w-3.5 h-3.5" />
+            </button>
           )}
         </div>
+      </div>
+
+      {/* ── Tabs ── */}
+      <div className="flex mx-3 mb-1 p-0.5 bg-[var(--bg-wash)] rounded-lg flex-shrink-0">
+        {(['chats', 'contacts', 'calls'] as const).map(tab => (
+          <button key={tab} onClick={() => setSidebarTab(tab)}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-semibold rounded-md transition-all duration-200',
+              sidebarTab === tab
+                ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-soft'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+            )}>
+            {tab === 'chats' ? 'Chats' : tab === 'contacts' ? 'Contacts' : 'Calls'}
+            {tab === 'chats' && totalUnread > 0 && sidebarTab !== 'chats' && (
+              <span className="min-w-[16px] h-[16px] rounded-full bg-[var(--accent)] text-white text-[9px] font-bold flex items-center justify-center px-1">
+                {totalUnread > 9 ? '9+' : totalUnread}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Content ── */}
+      {sidebarTab === 'chats' ? (
+        <div className="flex-1 overflow-y-auto scroll-thin">
+          {search && filteredConversations.length === 0 && searchPeople.length === 0 && searchFiles.length === 0 && searchTextMessages.length === 0 ? (
+            <EmptySearch isSearching={isSearching} />
+          ) : (
+            <div className="pb-20">
+              {/* Conversations */}
+              {filteredConversations.length > 0 && (
+                <>
+                  {search && <SectionHeader label="Chats & Contacts" />}
+                  {filteredConversations.map((conv) => (
+                    <ConversationItem key={conv.id} conversation={conv}
+                      isActive={activeConversation === conv.id}
+                      isOnline={conv.other_user ? onlineUsers.has(conv.other_user.user_id) : false}
+                      onClick={() => { setActiveConversation(conv.id); setSearch(''); }} />
+                  ))}
+                </>
+              )}
+              {/* People */}
+              {searchPeople.length > 0 && (
+                <>
+                  <SectionHeader label="People" />
+                  {searchPeople.map((person) => (
+                    <button key={person.user_id} onClick={() => handleStartConversation(person.user_id)}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--hover)] transition-colors text-left">
+                      <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold', getAvatarColor(person.display_name || person.username))}>
+                        {getInitials(person.display_name || person.username)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-[var(--text-primary)] truncate">{person.display_name || person.username}</div>
+                        <div className="text-xs text-[var(--text-muted)] truncate">{person.bio || 'Available'}</div>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
+              {/* Messages */}
+              {searchTextMessages.length > 0 && (
+                <>
+                  <SectionHeader label="Messages" />
+                  {searchTextMessages.map((msg) => (
+                    <button key={msg.message_id} onClick={() => { setActiveConversation(msg.conversation_id); setSearch(''); }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--hover)] transition-colors text-left group">
+                      <div className="w-10 h-10 rounded-full bg-[var(--bg-wash)] flex items-center justify-center text-[var(--text-muted)] flex-shrink-0 group-hover:bg-[var(--accent-subtle)] group-hover:text-[var(--accent)] transition-colors">
+                        <MessageSquare className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-[var(--text-primary)] truncate">{msg.sender_display_name || msg.sender_username}</span>
+                          <span className="text-[10px] text-[var(--text-muted)]">{new Date(msg.created_at).toLocaleDateString()}</span>
+                        </div>
+                        <p className="text-xs text-[var(--text-muted)] mt-0.5 line-clamp-1">{msg.snippet}</p>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
+              {/* Files */}
+              {searchFiles.length > 0 && (
+                <>
+                  <SectionHeader label="Files" />
+                  {searchFiles.map((file) => (
+                    <button key={file.message_id} onClick={() => { setActiveConversation(file.conversation_id); setSearch(''); }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--hover)] transition-colors text-left group">
+                      <div className="w-10 h-10 rounded-lg bg-[var(--bg-wash)] flex items-center justify-center text-[var(--text-muted)] flex-shrink-0 group-hover:bg-[var(--accent-subtle)] group-hover:text-[var(--accent)] transition-colors">
+                        {file.message_type === 'image' ? <ImageIcon className="w-4 h-4" /> : <FileIcon className="w-4 h-4" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-semibold text-[var(--text-primary)] truncate block">
+                          {(() => { try { return JSON.parse(file.snippet).filename; } catch { return file.snippet; } })()}
+                        </span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[11px] text-[var(--text-muted)]">{file.sender_display_name || file.sender_username}</span>
+                          <span className="w-0.5 h-0.5 rounded-full bg-[var(--text-muted)]" />
+                          <span className="text-[11px] text-[var(--text-muted)]">{new Date(file.created_at).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      ) : sidebarTab === 'contacts' ? (
+        <ContactsPanel />
       ) : (
         <CallLogsPanel />
       )}
 
-      {/* User profile section */}
-      <div className="p-3 border-t border-[var(--border)]">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowProfile(true)}
-            className="flex items-center gap-3 flex-1 p-2 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors"
-          >
-            <div className="w-9 h-9 bg-zynk-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
-              {getInitials(user?.display_name || user?.username || '?')}
-            </div>
-            <div className="flex-1 text-left">
-              <p className="text-sm font-medium text-[var(--text-primary)] truncate">
-                {user?.display_name || user?.username}
-              </p>
-              <p className="text-xs text-green-500">Online</p>
-            </div>
-          </button>
-          <button
-            onClick={handleLogout}
-            className="p-2 rounded-lg hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
-            title="Sign out"
-          >
-            <LogOut className="w-4 h-4" />
+      {/* ── FAB ── */}
+      {sidebarTab === 'chats' && (
+        <div className="absolute bottom-5 right-4 z-20 animate-fab">
+          <button onClick={() => setShowNewChat(true)}
+            className="w-12 h-12 rounded-xl bg-[var(--accent)] text-white flex items-center justify-center shadow-float hover:shadow-overlay transition-all duration-200 hover:bg-[var(--accent-hover)] active:scale-90">
+            <Plus className="w-5 h-5" />
           </button>
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function ConversationItem({
-  conversation,
-  isActive,
-  isOnline,
-  onClick,
-}: {
-  conversation: Conversation;
-  isActive: boolean;
-  isOnline: boolean;
-  onClick: () => void;
+/* ── Sub-components ── */
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div className="px-4 py-2 mt-1">
+      <span className="text-[10px] font-bold text-[var(--text-muted)] tracking-widest uppercase">{label}</span>
+    </div>
+  );
+}
+
+function EmptySearch({ isSearching }: { isSearching: boolean }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] px-8">
+      {isSearching ? (
+        <div className="w-6 h-6 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+      ) : (
+        <>
+          <div className="w-14 h-14 rounded-2xl bg-[var(--bg-wash)] flex items-center justify-center mb-3">
+            <MessageCircle className="w-6 h-6 opacity-30" />
+          </div>
+          <p className="text-sm font-semibold text-[var(--text-secondary)]">No results</p>
+          <p className="text-xs mt-1">Try a different search term</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ConversationItem({ conversation, isActive, isOnline, onClick }: {
+  conversation: Conversation; isActive: boolean; isOnline: boolean; onClick: () => void;
 }) {
   const name = conversation.type === 'one_to_one'
     ? (conversation.other_user?.display_name || conversation.other_user?.username || 'Unknown')
     : (conversation.group_info?.name || 'Group');
-
-  const lastMessage = conversation.last_message
-    ? truncate(conversation.last_message, 40)
-    : 'No messages yet';
-
-  const time = conversation.last_message_at
-    ? formatTime(conversation.last_message_at)
-    : '';
+  const lastMessage = formatLastMessage(conversation.last_message || '', 36) || 'No messages yet';
+  const time = conversation.last_message_at ? formatTime(conversation.last_message_at) : '';
+  const hasUnread = conversation.unread_count > 0;
+  const color = conversation.type === 'group' ? 'bg-violet-500' : getAvatarColor(name);
 
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'w-full flex items-center gap-3 p-3 hover:bg-[var(--bg-tertiary)] transition-colors text-left',
-        isActive && 'bg-[var(--bg-tertiary)] border-l-2 border-zynk-500'
-      )}
-    >
-      <div className="relative">
-        <div className={cn(
-          'w-11 h-11 rounded-full flex items-center justify-center text-white text-sm font-medium',
-          conversation.type === 'group' ? 'bg-purple-600' : 'bg-zynk-600'
-        )}>
-          {conversation.type === 'group'
-            ? <Users className="w-5 h-5" />
-            : getInitials(name)
-          }
+    <button onClick={onClick} className={cn(
+      'conv-item w-full flex items-center gap-3 px-4 py-3 text-left transition-all duration-150',
+      isActive && 'active'
+    )}>
+      {/* Avatar */}
+      <div className="relative flex-shrink-0">
+        <div className={cn('w-11 h-11 rounded-full flex items-center justify-center text-white text-sm font-bold', color)}>
+          {conversation.type === 'group' ? <Users className="w-[18px] h-[18px]" /> : getInitials(name)}
         </div>
         {conversation.type === 'one_to_one' && isOnline && (
-          <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-[var(--bg-secondary)]" />
+          <div className="absolute bottom-0 right-0 w-3 h-3 bg-[var(--success)] rounded-full border-2 border-[var(--sidebar-bg)] online-pulse" />
         )}
       </div>
 
+      {/* Content */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-[var(--text-primary)] truncate">{name}</span>
-          <span className="text-xs text-[var(--text-muted)] ml-2 whitespace-nowrap">{time}</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className={cn('text-[13.5px] truncate', hasUnread ? 'font-bold text-[var(--text-primary)]' : 'font-semibold text-[var(--text-primary)]')}>
+            {name}
+          </span>
+          <span className={cn('text-[11px] whitespace-nowrap flex-shrink-0', hasUnread ? 'text-[var(--accent)] font-bold' : 'text-[var(--text-muted)]')}>
+            {time}
+          </span>
         </div>
-        <div className="flex items-center justify-between mt-0.5">
-          <span className="text-xs text-[var(--text-secondary)] truncate">{lastMessage}</span>
-          {conversation.unread_count > 0 && (
-            <span className="ml-2 min-w-[20px] h-5 bg-zynk-600 text-white text-xs font-medium rounded-full flex items-center justify-center px-1.5">
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <span className={cn('text-[12.5px] truncate', hasUnread ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]')}>
+            {lastMessage}
+          </span>
+          {hasUnread && (
+            <span className="flex-shrink-0 min-w-[20px] h-[20px] bg-[var(--accent)] text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
               {conversation.unread_count > 99 ? '99+' : conversation.unread_count}
             </span>
           )}

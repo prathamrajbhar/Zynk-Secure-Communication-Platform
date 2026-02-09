@@ -9,11 +9,13 @@ import { ParticipantRole, ConversationType } from '@prisma/client';
 const router = Router();
 
 // POST /groups
+const MAX_GROUP_MEMBERS = 32; // MVP limit
+
 const createGroupSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(500).optional(),
   avatar_url: z.string().url().optional().nullable(),
-  member_ids: z.array(z.string().uuid()).min(1).max(255),
+  member_ids: z.array(z.string().uuid()).min(1).max(31), // 31 + creator = 32
 });
 
 router.post('/', authenticate, validate(createGroupSchema), async (req: AuthRequest, res: Response) => {
@@ -247,6 +249,12 @@ router.post('/:groupId/members', authenticate, async (req: AuthRequest, res: Res
     }
 
     const conversationId = group.conversation_id;
+
+    // Enforce group member limit (32 per MVP spec)
+    const currentMemberCount = await prisma.groupMember.count({ where: { group_id: groupId } });
+    if (currentMemberCount + user_ids.length > MAX_GROUP_MEMBERS) {
+      return res.status(400).json({ error: `Group cannot exceed ${MAX_GROUP_MEMBERS} members. Currently ${currentMemberCount}, trying to add ${user_ids.length}.` });
+    }
 
     const added = await prisma.$transaction(async (tx) => {
       const successfulIds: string[] = [];

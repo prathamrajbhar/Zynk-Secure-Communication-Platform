@@ -41,6 +41,10 @@ export const SOCKET_EVENTS = {
   CALL_ENDED: 'call:ended',
   CALL_DECLINE: 'call:decline',
   CALL_DECLINED: 'call:declined',
+  CALL_RENEGOTIATE: 'call:renegotiate',
+  CALL_RENEGOTIATE_ANSWER: 'call:renegotiate-answer',
+  CALL_MEDIA_STATE: 'call:media-state',
+  CALL_ERROR: 'call:error',
 
   // Conversation
   CONVERSATION_JOIN: 'conversation:join',
@@ -120,11 +124,18 @@ export function isConnected(): boolean {
   return socket?.connected ?? false;
 }
 
+let isConnecting = false;
+
 export function connectSocket(token: string): Socket {
   const connectionStore = getConnectionStore();
 
-  // If already connected with this token, return existing socket
+  // If already connected, return existing socket
   if (socket?.connected) {
+    return socket;
+  }
+
+  // Prevent concurrent connection attempts
+  if (isConnecting && socket) {
     return socket;
   }
 
@@ -135,6 +146,7 @@ export function connectSocket(token: string): Socket {
     socket = null;
   }
 
+  isConnecting = true;
   connectionStore.setStatus('connecting');
 
   socket = io(WS_URL, {
@@ -145,18 +157,19 @@ export function connectSocket(token: string): Socket {
     reconnectionDelay: 1000,
     reconnectionDelayMax: 10000,
     timeout: 20000,
-    forceNew: true,
   });
 
   // Connection events
   socket.on(SOCKET_EVENTS.CONNECT, () => {
     console.log('✓ WebSocket connected');
+    isConnecting = false;
     connectionStore.markConnected();
     startHeartbeat();
   });
 
   socket.on(SOCKET_EVENTS.DISCONNECT, (reason) => {
     console.log('✗ WebSocket disconnected:', reason);
+    isConnecting = false;
     connectionStore.markDisconnected();
     stopHeartbeat();
 
@@ -168,6 +181,7 @@ export function connectSocket(token: string): Socket {
 
   socket.on(SOCKET_EVENTS.CONNECT_ERROR, (error) => {
     console.error('WebSocket connection error:', error.message);
+    isConnecting = false;
     connectionStore.setError(error.message);
   });
 
@@ -206,6 +220,7 @@ export function connectSocket(token: string): Socket {
 
 export function disconnectSocket() {
   stopHeartbeat();
+  isConnecting = false;
 
   if (socket) {
     socket.removeAllListeners();

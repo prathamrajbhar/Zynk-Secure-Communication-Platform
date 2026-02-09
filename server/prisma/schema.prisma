@@ -81,6 +81,9 @@ model User {
   callParticipations CallParticipant[]
   contacts          Contact[]                 @relation("UserContacts")
   contactOf         Contact[]                 @relation("ContactOf")
+  identityKeys      IdentityKey[]
+  signedPreKeys     SignedPreKey[]
+  preKeys           PreKey[]
 
   @@map("users")
   @@index([username], map: "idx_users_username")
@@ -114,6 +117,9 @@ model Device {
   
   user               User       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   sessions           Session[]
+  identityKeys       IdentityKey[]
+  signedPreKeys      SignedPreKey[]
+  preKeys            PreKey[]
 
   @@map("devices")
   @@index([device_fingerprint], map: "idx_devices_fingerprint")
@@ -299,4 +305,57 @@ model Contact {
   @@map("contacts")
   @@index([user_id], map: "idx_contacts_user")
   @@index([contact_id], map: "idx_contacts_contact")
+}
+
+// ========== E2EE Key Management ==========
+
+model IdentityKey {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  device_id       String   @db.Uuid
+  identity_key    String   // Base64-encoded public identity key
+  registration_id Int      // Signal protocol registration ID
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+  updated_at      DateTime @default(now()) @db.Timestamp(6)
+  
+  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device          Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, device_id])
+  @@map("identity_keys")
+  @@index([user_id], map: "idx_identity_keys_user")
+}
+
+model SignedPreKey {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  device_id       String   @db.Uuid
+  key_id          Int      // Signal protocol key ID
+  public_key      String   // Base64-encoded public key
+  signature       String   // Base64-encoded signature
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+  
+  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device          Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, device_id, key_id])
+  @@map("signed_pre_keys")
+  @@index([user_id, device_id], map: "idx_signed_pre_keys_user_device")
+}
+
+model PreKey {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String   @db.Uuid
+  device_id       String   @db.Uuid
+  key_id          Int      // Signal protocol key ID
+  public_key      String   // Base64-encoded public key
+  used            Boolean  @default(false)
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+  
+  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device          Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, device_id, key_id])
+  @@map("pre_keys")
+  @@index([user_id, device_id, used], map: "idx_pre_keys_user_device_used")
 }

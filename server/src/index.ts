@@ -20,6 +20,7 @@ import messageRoutes from './routes/messages';
 import groupRoutes from './routes/groups';
 import callRoutes from './routes/calls';
 import fileRoutes from './routes/files';
+import keyRoutes from './routes/keys';
 
 const app = express();
 const server = http.createServer(app);
@@ -27,21 +28,42 @@ const server = http.createServer(app);
 // Middleware
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
-  origin: config.cors.origin,
+  origin: (origin, callback) => {
+    // If "*" is in the allowed origins, allow any origin
+    if (config.cors.origin.includes('*')) {
+      callback(null, true);
+    } else if (!origin || config.cors.origin.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-app.use(morgan('dev'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+}),
+);
+app.use(morgan(config.express.morganMode));
+app.use(express.json({ limit: config.express.bodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: config.express.bodyLimit }));
 app.use(cookieParser());
+
+// Debug Request Logger (Development only)
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/')) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+      if (req.method !== 'GET') console.log('Body:', JSON.stringify(req.body, null, 2));
+    }
+    next();
+  });
+}
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 100,
-  message: { error: 'Too many requests, please try again later' },
+  windowMs: config.rateLimit.windowMs,
+  max: config.rateLimit.max,
+  message: { error: config.rateLimit.message },
 });
 app.use('/api/', limiter);
 
@@ -55,6 +77,7 @@ app.use('/api/v1/messages', messageRoutes);
 app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1/calls', callRoutes);
 app.use('/api/v1/files', fileRoutes);
+app.use('/api/v1/keys', keyRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -91,7 +114,7 @@ async function start() {
 ║    📡 WebSocket ready                        ║
 ║    🌐 API: http://localhost:${config.port}/api/v1      ║
 ║    ❤️  Health: http://localhost:${config.port}/api/health║
-║    🛡️  CORS Allowed: ${config.cors.origin}
+║    🛡️  CORS Allowed: ${config.cors.origin.join(', ')}
 ║                                              ║
 ╚══════════════════════════════════════════════╝
       `);

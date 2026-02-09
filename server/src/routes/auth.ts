@@ -9,6 +9,8 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { Platform } from '@prisma/client';
 
+import { registerPushToken } from '../services/pushNotification';
+
 const router = Router();
 
 // Validation schemas
@@ -153,6 +155,12 @@ router.post('/login', validate(loginSchema), async (req, res: Response) => {
     });
 
     if (!device) {
+      // Enforce 5-device limit per MVP spec
+      const deviceCount = await prisma.device.count({ where: { user_id: user.id } });
+      if (deviceCount >= 5) {
+        return res.status(403).json({ error: 'Maximum of 5 devices reached. Please remove a device before adding a new one.' });
+      }
+
       device = await prisma.device.create({
         data: {
           user_id: user.id,
@@ -217,12 +225,19 @@ router.post('/login', validate(loginSchema), async (req, res: Response) => {
 // POST /auth/refresh
 router.post('/refresh', async (req, res: Response) => {
   try {
+    // Accept refresh token from Authorization header OR request body
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Refresh token required' });
+    let token: string | undefined;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.body?.refresh_token) {
+      token = req.body.refresh_token;
     }
 
-    const token = authHeader.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'Refresh token required' });
+    }
     const decoded = jwt.verify(token, config.jwt.refreshSecret) as { userId: string; deviceId: string };
 
     // Verify session exists
@@ -281,6 +296,18 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
   }
 });
 
+// POST /auth/logout-all — logout from all devices
+router.post('/logout-all', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    await prisma.session.deleteMany({
+      where: { user_id: req.userId }
+    });
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to logout from all devices' });
+  }
+});
+
 // GET /auth/devices
 router.get('/devices', authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -324,6 +351,20 @@ router.delete('/devices/:deviceId', authenticate, async (req: AuthRequest, res: 
     return res.status(204).send();
   } catch (error) {
     return res.status(500).json({ error: 'Failed to delete device' });
+  }
+});
+
+// POST /auth/devices/push-token — register push notification token for current device
+router.post('/devices/push-token', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { push_token } = req.body;
+    if (!push_token || typeof push_token !== 'string') {
+      return res.status(400).json({ error: 'push_token required' });
+    }
+    await registerPushToken(req.deviceId!, push_token);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to register push token' });
   }
 });
 

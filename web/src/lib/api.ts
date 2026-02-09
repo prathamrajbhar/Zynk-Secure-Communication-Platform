@@ -65,7 +65,11 @@ api.interceptors.response.use(
         // Create refresh promise
         refreshPromise = (async () => {
           try {
-            const res = await axios.post(`${API_URL}/auth/refresh`, { refresh_token: refreshToken });
+            const res = await axios.post(
+              `${API_URL}/auth/refresh`,
+              {},
+              { headers: { Authorization: `Bearer ${refreshToken}` } }
+            );
             const newToken = res.data.session_token;
             localStorage.setItem('session_token', newToken);
             if (res.data.refresh_token) {

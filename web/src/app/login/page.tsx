@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/authStore';
-import { Shield, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, ArrowRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function LoginPage() {
@@ -12,16 +12,13 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [focused, setFocused] = useState<string | null>(null);
   const { login } = useAuthStore();
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username || !password) {
-      toast.error('Please fill in all fields');
-      return;
-    }
-
+    if (!username || !password) { toast.error('Please fill in all fields'); return; }
     setLoading(true);
     try {
       await login(username, password);
@@ -30,73 +27,99 @@ export default function LoginPage() {
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string } } };
       toast.error(err.response?.data?.error || 'Login failed');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)] flex items-center justify-center px-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-2 mb-4">
-            <Shield className="w-10 h-10 text-zynk-500" />
-            <span className="text-2xl font-bold text-[var(--text-primary)]">Zynk</span>
+    <div className="min-h-screen auth-bg flex items-center justify-center px-4 py-8">
+      {/* Subtle top glow */}
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] rounded-full bg-[var(--accent)] opacity-[0.04] blur-[100px] pointer-events-none" />
+
+      <div className="w-full max-w-[400px] relative z-10">
+        {/* Logo */}
+        <div className="text-center mb-10 animate-appear">
+          <Link href="/" className="inline-flex items-center gap-2.5 mb-8 group">
+            <div className="w-10 h-10 rounded-xl bg-[var(--accent)] flex items-center justify-center shadow-lg transition-transform duration-200 group-hover:scale-105">
+              <span className="text-white text-sm font-extrabold tracking-tight">Z</span>
+            </div>
+            <span className="text-xl font-extrabold text-[var(--text-primary)] tracking-tight">Zynk</span>
           </Link>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">Welcome back</h1>
-          <p className="text-[var(--text-secondary)] mt-1">Sign in to your secure account</p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Welcome back</h1>
+          <p className="text-sm text-[var(--text-muted)] mt-1.5">Sign in to continue your conversations</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="card space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="input-field"
-              placeholder="Enter your username"
-              autoComplete="username"
-              autoFocus
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">Password</label>
-            <div className="relative">
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="animate-appear stagger-1 animate-fill">
+          <div className="bg-[var(--bg-surface)] rounded-2xl border border-[var(--border)] p-6 space-y-4 shadow-soft">
+            {/* Username */}
+            <div>
+              <label className={`block text-xs font-semibold mb-1.5 tracking-wide uppercase transition-colors duration-150 ${focused === 'username' ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
+                Username
+              </label>
               <input
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input-field pr-10"
-                placeholder="Enter your password"
-                autoComplete="current-password"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                onFocus={() => setFocused('username')}
+                onBlur={() => setFocused(null)}
+                className="input-modern"
+                placeholder="Enter your username"
+                autoComplete="username"
+                autoFocus
               />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
             </div>
+
+            {/* Password */}
+            <div>
+              <label className={`block text-xs font-semibold mb-1.5 tracking-wide uppercase transition-colors duration-150 ${focused === 'password' ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onFocus={() => setFocused('password')}
+                  onBlur={() => setFocused(null)}
+                  className="input-modern pr-11"
+                  placeholder="Enter your password"
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Submit */}
+            <button
+              type="submit"
+              disabled={loading || !username || !password}
+              className="btn-primary btn-shimmer w-full py-3 !rounded-xl text-sm font-bold mt-2"
+            >
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  Sign In
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
           </div>
-
-          <button type="submit" disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2">
-            {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-            {loading ? 'Signing in...' : 'Sign In'}
-          </button>
-
-          <p className="text-center text-sm text-[var(--text-secondary)]">
-            Don&apos;t have an account?{' '}
-            <Link href="/register" className="text-zynk-500 hover:text-zynk-400 font-medium">
-              Create one
-            </Link>
-          </p>
         </form>
 
-        <p className="text-center text-xs text-[var(--text-muted)] mt-6">
-          🔒 End-to-end encrypted. Your credentials never leave your device unencrypted.
+        {/* Footer */}
+        <p className="text-center text-sm text-[var(--text-muted)] mt-6 animate-appear stagger-2 animate-fill">
+          Don&apos;t have an account?{' '}
+          <Link href="/register" className="text-[var(--accent)] font-semibold hover:underline underline-offset-2 transition-colors">
+            Create one
+          </Link>
         </p>
       </div>
     </div>

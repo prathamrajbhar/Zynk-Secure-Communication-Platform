@@ -5,16 +5,17 @@ import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
-import { getSocket, SOCKET_EVENTS } from '@/lib/socket';
 import { formatMessageTime, getInitials, cn } from '@/lib/utils';
 import {
-  Send, Paperclip, Phone, Video, Lock,
+  Send, Paperclip, Phone, Video, Lock, Shield,
   Check, CheckCheck, Image, File as FileIcon, Smile,
   ArrowLeft, Search, Loader2, Reply, Trash2, X,
-  Download, RefreshCw, AlertCircle, Clock,
+  Download, RefreshCw, AlertCircle, Clock, Mic, Users,
 } from 'lucide-react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
+import GroupInfoPanel from './GroupInfoPanel';
+import SafetyNumberModal from './SafetyNumberModal';
 
 const QUICK_EMOJIS = ['😀', '😂', '❤️', '👍', '🔥', '🎉', '😢', '🤔', '👋', '🙏', '💯', '✨', '😎', '🥳', '😡', '💀'];
 const EMOJI_CATEGORIES: Record<string, string[]> = {
@@ -24,19 +25,17 @@ const EMOJI_CATEGORIES: Record<string, string[]> = {
   '🎉 Objects': ['🎉', '🎊', '🎈', '🔥', '⭐', '🌟', '✨', '💫', '🎯', '🏆', '🥇', '🎮', '🎵', '🎶', '💡', '📱', '💻', '📷', '🔒', '🔑', '🛡️', '⚡', '💯'],
 };
 
-interface SearchResult {
-  message_id: string;
-  sender_display_name?: string;
-  sender_username: string;
-  snippet: string;
-  created_at: string;
-}
+interface SearchResult { message_id: string; sender_display_name?: string; sender_username: string; snippet: string; created_at: string; }
+interface FileData { file_id: string; filename: string; file_size?: number; mime_type?: string; }
 
-interface FileData {
-  file_id: string;
-  filename: string;
-  file_size?: number;
-  mime_type?: string;
+const avatarColors = [
+  'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
+  'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500',
+];
+function getAvatarColor(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
+  return avatarColors[Math.abs(h) % avatarColors.length];
 }
 
 export default function ChatArea() {
@@ -50,6 +49,7 @@ export default function ChatArea() {
   const { initiateCall } = useCallStore();
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [showSearch, setShowSearch] = useState(false);
@@ -58,6 +58,8 @@ export default function ChatArea() {
   const [isSearching, setIsSearching] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
   const [imagePreview, setImagePreview] = useState<{ url: string; name: string } | null>(null);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [showSafetyNumber, setShowSafetyNumber] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -74,15 +76,8 @@ export default function ChatArea() {
 
   useEffect(() => {
     if (!activeConversation || !conversationMessages.length) return;
-
-    // Check if there are any unread messages from others
-    const hasUnread = conversationMessages.some(
-      (m) => m.sender_id !== user?.id && m.status !== 'read'
-    );
-
-    if (hasUnread) {
-      markConversationRead(activeConversation);
-    }
+    const hasUnread = conversationMessages.some((m) => m.sender_id !== user?.id && m.status !== 'read');
+    if (hasUnread) markConversationRead(activeConversation);
   }, [activeConversation, conversationMessages, user?.id, markConversationRead]);
 
   useEffect(() => {
@@ -99,13 +94,8 @@ export default function ChatArea() {
 
   const handleSend = () => {
     if (!input.trim() || !activeConversation) return;
-
-    // Use optimistic sending
     sendMessageOptimistic(activeConversation, input.trim(), 'text', replyTo?.id);
-    setInput('');
-    setReplyTo(null);
-
-    // Stop typing indicator
+    setInput(''); setReplyTo(null);
     sendTyping(activeConversation, false);
   };
 
@@ -117,11 +107,8 @@ export default function ChatArea() {
   const handleTyping = () => {
     if (!activeConversation) return;
     sendTyping(activeConversation, true);
-
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      sendTyping(activeConversation, false);
-    }, 3000);
+    typingTimeoutRef.current = setTimeout(() => { sendTyping(activeConversation, false); }, 3000);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -129,17 +116,26 @@ export default function ChatArea() {
     if (!file || !activeConversation) return;
     if (file.size > 100 * 1024 * 1024) { toast.error('File size must be under 100MB'); return; }
     setIsUploading(true);
+    setUploadProgress(0);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('conversation_id', activeConversation);
-      const res = await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await api.post('/files/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(pct);
+          }
+        },
+      });
       const messageType = file.type.startsWith('image/') ? 'image' : 'file';
       const content = JSON.stringify({ file_id: res.data.file_id, filename: res.data.filename, file_size: res.data.file_size, mime_type: res.data.mime_type });
       sendMessageOptimistic(activeConversation, content, messageType);
       toast.success('File uploaded');
     } catch { toast.error('Failed to upload file'); }
-    finally { setIsUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
+    finally { setIsUploading(false); setUploadProgress(0); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
   const handleCall = (type: 'audio' | 'video') => {
@@ -192,91 +188,140 @@ export default function ChatArea() {
     } catch { toast.error('Download failed'); }
   };
 
-  const convName = conversation?.type === 'one_to_one' ? (conversation.other_user?.display_name || conversation.other_user?.username || 'Unknown') : (conversation?.group_info?.name || 'Group');
+  const convName = conversation?.type === 'one_to_one'
+    ? (conversation.other_user?.display_name || conversation.other_user?.username || 'Unknown')
+    : (conversation?.group_info?.name || 'Group');
   const isOnline = conversation?.other_user ? onlineUsers.has(conversation.other_user.user_id) : false;
+  const color = conversation?.type === 'group' ? 'bg-violet-500' : getAvatarColor(convName);
 
+  /* ── Empty state ── */
   if (!activeConversation) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[var(--bg-primary)]">
-        <div className="text-center text-[var(--text-muted)]">
-          <Lock className="w-16 h-16 mx-auto mb-4 opacity-20" />
-          <h2 className="text-xl font-semibold text-[var(--text-primary)] mb-2">Zynk Messenger</h2>
-          <p className="text-sm">Select a conversation or start a new chat</p>
-          <p className="text-xs mt-2 text-[var(--text-muted)]">End-to-end encrypted</p>
+      <div className="flex-1 flex items-center justify-center bg-[var(--bg-app)] relative">
+        <div className="absolute inset-0 bg-[var(--gradient-surface)] pointer-events-none" />
+        <div className="text-center relative z-10 animate-appear px-8">
+          <div className="relative inline-block mb-8">
+            <div className="w-24 h-24 rounded-3xl bg-[var(--accent-subtle)] flex items-center justify-center mx-auto">
+              <Lock className="w-10 h-10 text-[var(--accent)]" />
+            </div>
+            <div className="absolute -inset-3 rounded-[28px] border-2 border-dashed border-[var(--accent-muted)] animate-pulse opacity-40" />
+          </div>
+          <h2 className="text-2xl font-extrabold text-[var(--text-primary)] mb-3 tracking-tight">Zynk</h2>
+          <p className="text-sm text-[var(--text-muted)] max-w-xs mx-auto leading-relaxed">
+            Select a conversation to start messaging securely.
+          </p>
+          <div className="flex items-center justify-center gap-1.5 mt-6 text-xs text-[var(--text-muted)]">
+            <Shield className="w-3.5 h-3.5" />
+            <span>End-to-end encrypted</span>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-[var(--bg-primary)] min-w-0">
+    <div className="flex-1 flex flex-col bg-[var(--bg-app)] min-w-0">
       {/* Header */}
-      <div className="h-16 px-4 flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-secondary)] flex-shrink-0">
+      <div className="h-[64px] px-4 flex items-center justify-between chat-header flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <button onClick={() => setActiveConversation(null)} className="lg:hidden p-1 rounded hover:bg-[var(--bg-tertiary)] flex-shrink-0">
+          <button onClick={() => setActiveConversation(null)} className="lg:hidden p-1.5 rounded-full hover:bg-[var(--hover)] flex-shrink-0 transition-all active:scale-90">
             <ArrowLeft className="w-5 h-5 text-[var(--text-secondary)]" />
           </button>
-          <div className="relative flex-shrink-0">
-            <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-medium', conversation?.type === 'group' ? 'bg-purple-600' : 'bg-zynk-600')}>{getInitials(convName)}</div>
-            {conversation?.type === 'one_to_one' && isOnline && <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-[var(--bg-secondary)]" />}
+          <div className="relative">
+            <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0 cursor-pointer shadow-sm transition-transform hover:scale-105', color)}>
+              {getInitials(convName)}
+            </div>
+            {isOnline && (
+              <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-[var(--success)] rounded-full border-[2.5px] border-[var(--bg-surface)] online-pulse" />
+            )}
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] truncate">{convName}</h3>
-            <p className="text-xs text-[var(--text-muted)]">
-              {typing.length > 0 ? <span className="text-zynk-400">typing...</span> : isOnline ? <span className="text-green-500">online</span> : 'offline'}
+            <h3 className="text-[15px] font-bold text-[var(--text-primary)] truncate">{convName}</h3>
+            <p className="text-xs text-[var(--text-muted)] leading-tight">
+              {typing.length > 0
+                ? <span className="text-[var(--accent)] font-medium flex items-center gap-1">
+                  <span className="flex gap-0.5"><span className="typing-dot" style={{ width: '4px', height: '4px' }} /><span className="typing-dot" style={{ width: '4px', height: '4px' }} /><span className="typing-dot" style={{ width: '4px', height: '4px' }} /></span>
+                  typing
+                </span>
+                : isOnline
+                  ? <span className="text-[var(--success)] flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[var(--success)]" /> online</span>
+                  : 'offline'}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={() => setShowSearch(!showSearch)} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]" title="Search"><Search className="w-5 h-5" /></button>
           {conversation?.type === 'one_to_one' && (
             <>
-              <button onClick={() => handleCall('audio')} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]" title="Voice call"><Phone className="w-5 h-5" /></button>
-              <button onClick={() => handleCall('video')} className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]" title="Video call"><Video className="w-5 h-5" /></button>
+              <button onClick={() => setShowSafetyNumber(true)} className="btn-icon" title="Verify encryption">
+                <Shield className="w-[18px] h-[18px]" />
+              </button>
+              <button onClick={() => handleCall('video')} className="btn-icon">
+                <Video className="w-[18px] h-[18px]" />
+              </button>
+              <button onClick={() => handleCall('audio')} className="btn-icon">
+                <Phone className="w-[18px] h-[18px]" />
+              </button>
             </>
           )}
+          {conversation?.type === 'group' && conversation.group_info && (
+            <button onClick={() => setShowGroupInfo(true)} className="btn-icon" title="Group info">
+              <Users className="w-[18px] h-[18px]" />
+            </button>
+          )}
+          <button onClick={() => setShowSearch(!showSearch)} className="btn-icon">
+            <Search className="w-[18px] h-[18px]" />
+          </button>
         </div>
       </div>
 
       {/* Search bar */}
       {showSearch && (
-        <div className="px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] flex items-center gap-2">
+        <div className="px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-surface)] flex items-center gap-3 animate-fade-in">
           <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
-          <input type="text" value={searchQuery} onChange={(e) => handleSearch(e.target.value)} className="flex-1 bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]" placeholder="Search in conversation..." autoFocus />
-          {isSearching && <Loader2 className="w-4 h-4 animate-spin text-zynk-500" />}
-          {searchResults.length > 0 && <span className="text-xs text-[var(--text-muted)]">{searchResults.length} results</span>}
-          <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)]"><X className="w-4 h-4 text-[var(--text-secondary)]" /></button>
+          <input type="text" value={searchQuery} onChange={(e) => handleSearch(e.target.value)}
+            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]"
+            placeholder="Search in conversation..." autoFocus />
+          {isSearching && <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />}
+          {searchResults.length > 0 && <span className="text-xs text-[var(--text-muted)]">{searchResults.length} found</span>}
+          <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} className="p-1 rounded hover:bg-[var(--hover)]">
+            <X className="w-4 h-4 text-[var(--text-muted)]" />
+          </button>
         </div>
       )}
       {showSearch && searchResults.length > 0 && (
-        <div className="max-h-40 overflow-y-auto border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+        <div className="max-h-40 overflow-y-auto border-b border-[var(--border)] bg-[var(--bg-surface)]">
           {searchResults.map((r) => (
-            <button key={r.message_id} className="w-full text-left px-4 py-2 hover:bg-[var(--bg-tertiary)] flex items-center gap-2" onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-zynk-400 font-medium">{r.sender_display_name || r.sender_username}</p>
-                <p className="text-sm text-[var(--text-primary)] truncate">{r.snippet}</p>
-              </div>
-              <span className="text-xs text-[var(--text-muted)] flex-shrink-0">{formatMessageTime(r.created_at)}</span>
+            <button key={r.message_id} className="w-full text-left px-4 py-2.5 hover:bg-[var(--hover)] transition-colors"
+              onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
+              <p className="text-xs text-[var(--accent)] font-medium">{r.sender_display_name || r.sender_username}</p>
+              <p className="text-sm text-[var(--text-primary)] truncate">{r.snippet}</p>
             </button>
           ))}
         </div>
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
-        <div className="flex justify-center mb-4">
-          <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-secondary)] px-3 py-1 rounded-full flex items-center gap-1"><Lock className="w-3 h-3" />Messages are end-to-end encrypted</span>
+      <div className="flex-1 overflow-y-auto px-4 lg:px-16 py-4 bg-[var(--bg-app)] chat-messages-bg scroll-thin">
+        <div className="flex justify-center mb-8">
+          <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-wash)] px-5 py-2 rounded-full flex items-center gap-2 border border-[var(--border)] shadow-soft">
+            <Lock className="w-3 h-3" /> Messages are end-to-end encrypted
+          </span>
         </div>
         {conversationMessages.map((msg: Message, i: number) => (
-          <MessageBubble key={msg.id} message={msg} isOwn={msg.sender_id === user?.id} showAvatar={i === 0 || conversationMessages[i - 1]?.sender_id !== msg.sender_id}
-            onReply={() => setReplyTo(msg)} onContextMenu={(e) => handleContextMenu(e, msg)} onPreview={handleFilePreview} onDownload={handleFileDownload} allMessages={conversationMessages} onRetry={retryMessage} />
+          <MessageBubble key={msg.id} message={msg} isOwn={msg.sender_id === user?.id}
+            showName={i === 0 || conversationMessages[i - 1]?.sender_id !== msg.sender_id}
+            onReply={() => setReplyTo(msg)} onContextMenu={(e) => handleContextMenu(e, msg)}
+            onPreview={handleFilePreview} onDownload={handleFileDownload}
+            allMessages={conversationMessages} onRetry={retryMessage} />
         ))}
         {typing.length > 0 && (
-          <div className="flex items-center gap-2 px-4 py-2">
-            <div className="flex space-x-1">
-              <div className="w-2 h-2 bg-[var(--text-muted)] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <div className="w-2 h-2 bg-[var(--text-muted)] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <div className="w-2 h-2 bg-[var(--text-muted)] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+          <div className="flex items-start gap-2 mt-2">
+            <div className="bg-[var(--bg-wash)] rounded-2xl rounded-bl-sm px-4 py-3">
+              <div className="flex items-center gap-1">
+                <div className="typing-dot" />
+                <div className="typing-dot" />
+                <div className="typing-dot" />
+              </div>
             </div>
           </div>
         )}
@@ -285,70 +330,122 @@ export default function ChatArea() {
 
       {/* Reply banner */}
       {replyTo && (
-        <div className="px-4 py-2 border-t border-[var(--border)] bg-[var(--bg-secondary)] flex items-center gap-2">
-          <Reply className="w-4 h-4 text-zynk-500 flex-shrink-0" />
-          <div className="flex-1 min-w-0 border-l-2 border-zynk-500 pl-2">
-            <p className="text-xs font-medium text-zynk-400">{replyTo.sender_display_name || replyTo.sender_username || 'You'}</p>
-            <p className="text-xs text-[var(--text-secondary)] truncate">{replyTo.encrypted_content}</p>
+        <div className="mx-4 px-3 py-2 rounded-t-lg bg-[var(--bg-wash)] flex items-center gap-3 border-l-[3px] border-[var(--accent)] animate-fade-in">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-[var(--accent)]">{replyTo.sender_display_name || replyTo.sender_username || 'You'}</p>
+            <p className="text-xs text-[var(--text-muted)] truncate">{replyTo.encrypted_content}</p>
           </div>
-          <button onClick={() => setReplyTo(null)} className="p-1 rounded hover:bg-[var(--bg-tertiary)]"><X className="w-4 h-4 text-[var(--text-muted)]" /></button>
+          <button onClick={() => setReplyTo(null)} className="p-1 rounded hover:bg-[var(--hover)]">
+            <X className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          </button>
         </div>
       )}
 
-      {/* Input */}
-      <div className="p-4 border-t border-[var(--border)] bg-[var(--bg-secondary)] flex-shrink-0">
-        <div className="flex items-end gap-2">
-          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
-          <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="p-2.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors flex-shrink-0" title="Attach file">
-            {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
-          </button>
-          <div className="relative" ref={emojiRef}>
-            <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors flex-shrink-0" title="Emoji"><Smile className="w-5 h-5" /></button>
-            {showEmojiPicker && (
-              <div className="absolute bottom-12 left-0 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl w-72 max-h-80 overflow-hidden z-30">
-                <div className="p-2 border-b border-[var(--border)]">
-                  <div className="grid grid-cols-8 gap-1">
-                    {QUICK_EMOJIS.map(e => <button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--bg-tertiary)] rounded">{e}</button>)}
+      {/* Upload progress bar */}
+      {isUploading && (
+        <div className="px-4 py-2 border-t border-[var(--border)] bg-[var(--bg-surface)]">
+          <div className="flex items-center gap-3">
+            <Paperclip className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-[var(--text-secondary)]">Uploading file...</span>
+                <span className="text-xs font-bold text-[var(--accent)]">{uploadProgress}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-[var(--bg-wash)] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[var(--accent)] rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Input area */}
+      <div className="px-4 pb-4 pt-2.5 flex-shrink-0 chat-input-bar">
+        <div className="flex items-end gap-2.5">
+          <div className="flex items-center gap-0.5 pb-0.5">
+            <div className="relative" ref={emojiRef}>
+              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="btn-icon">
+                <Smile className="w-5 h-5" />
+              </button>
+              {showEmojiPicker && (
+                <div className="absolute bottom-11 left-0 bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-overlay w-72 max-h-72 overflow-hidden z-30 animate-scale-in">
+                  <div className="p-2.5 border-b border-[var(--border)]">
+                    <div className="grid grid-cols-8 gap-0.5">
+                      {QUICK_EMOJIS.map(e => (
+                        <button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--hover)] rounded-lg transition-colors">{e}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto p-2.5">
+                    {Object.entries(EMOJI_CATEGORIES).map(([cat, emojis]) => (
+                      <div key={cat} className="mb-2">
+                        <p className="text-xs text-[var(--text-muted)] mb-1 px-1">{cat}</p>
+                        <div className="grid grid-cols-8 gap-0.5">
+                          {emojis.map(e => (
+                            <button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--hover)] rounded transition-colors">{e}</button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <div className="max-h-52 overflow-y-auto p-2">
-                  {Object.entries(EMOJI_CATEGORIES).map(([cat, emojis]) => (
-                    <div key={cat} className="mb-3">
-                      <p className="text-xs text-[var(--text-muted)] mb-1 font-medium">{cat}</p>
-                      <div className="grid grid-cols-8 gap-1">
-                        {emojis.map(e => <button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--bg-tertiary)] rounded">{e}</button>)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              )}
+            </div>
+            <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
+            <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="btn-icon">
+              {isUploading ? <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /> : <Paperclip className="w-5 h-5" />}
+            </button>
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <textarea value={input} onChange={(e) => { setInput(e.target.value); handleTyping(); }} onKeyDown={handleKeyDown}
+              className="input-field resize-none !rounded-2xl !py-2.5 !border-[var(--border)]"
+              placeholder="Type a message..." rows={1}
+              style={{ height: `${Math.min(Math.max(40, input.split('\n').length * 22 + 18), 120)}px` }} />
+          </div>
+
+          <div className="pb-0.5">
+            {input.trim() ? (
+              <button onClick={handleSend} disabled={connectionStatus === 'error'}
+                className="w-10 h-10 rounded-full bg-[var(--accent)] text-white flex items-center justify-center transition-all duration-200 hover:bg-[var(--accent-hover)] active:scale-90 shadow-md shadow-[var(--accent-muted)] hover:shadow-lg hover:shadow-[var(--accent-muted)]">
+                <Send className="w-[18px] h-[18px] ml-0.5" />
+              </button>
+            ) : (
+              <button className="btn-icon">
+                <Mic className="w-5 h-5" />
+              </button>
             )}
           </div>
-          <div className="flex-1 relative min-w-0">
-            <textarea value={input} onChange={(e) => { setInput(e.target.value); handleTyping(); }} onKeyDown={handleKeyDown}
-              className="input-field resize-none py-2.5 pr-4 min-h-[44px] max-h-32 w-full" placeholder="Type a message..." rows={1}
-              style={{ height: `${Math.min(Math.max(44, input.split('\n').length * 24 + 20), 128)}px` }} />
-          </div>
-          <button onClick={handleSend} disabled={!input.trim() || connectionStatus === 'error'}
-            className={cn('p-2.5 rounded-lg transition-colors flex-shrink-0', input.trim() && connectionStatus !== 'error' ? 'bg-zynk-600 hover:bg-zynk-700 text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]')}
-            title={connectionStatus !== 'connected' ? 'Connecting...' : 'Send message'}>
-            <Send className="w-5 h-5" />
-          </button>
         </div>
       </div>
 
       {/* Context menu */}
       {contextMenu && (
-        <div className="fixed z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-2xl py-1 min-w-[160px]" style={{ top: contextMenu.y, left: contextMenu.x }}>
-          <button onClick={() => { setReplyTo(contextMenu.message); setContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"><Reply className="w-4 h-4" /> Reply</button>
-          <button onClick={() => { navigator.clipboard.writeText(contextMenu.message.encrypted_content); toast.success('Copied'); setContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg> Copy
+        <div className="fixed z-50 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-overlay py-1 min-w-[180px] animate-scale-in"
+          style={{ top: contextMenu.y, left: contextMenu.x }}>
+          <button onClick={() => { setReplyTo(contextMenu.message); setContextMenu(null); }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors">
+            <Reply className="w-4 h-4 text-[var(--text-muted)]" /> Reply
+          </button>
+          <button onClick={() => { navigator.clipboard.writeText(contextMenu.message.encrypted_content); toast.success('Copied'); setContextMenu(null); }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors">
+            <svg className="w-4 h-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+            Copy
           </button>
           {contextMenu.message.sender_id === user?.id && (
             <>
-              <div className="border-t border-[var(--border)] my-1" />
-              <button onClick={() => handleDeleteMessage(contextMenu.message.id, false)} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"><Trash2 className="w-4 h-4" /> Delete for me</button>
-              <button onClick={() => handleDeleteMessage(contextMenu.message.id, true)} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"><Trash2 className="w-4 h-4" /> Delete for everyone</button>
+              <div className="my-1 border-t border-[var(--border)]" />
+              <button onClick={() => handleDeleteMessage(contextMenu.message.id, false)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors">
+                <Trash2 className="w-4 h-4 text-[var(--text-muted)]" /> Delete for me
+              </button>
+              <button onClick={() => handleDeleteMessage(contextMenu.message.id, true)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[var(--danger)] hover:bg-[var(--hover)] transition-colors">
+                <Trash2 className="w-4 h-4" /> Delete for everyone
+              </button>
             </>
           )}
         </div>
@@ -356,20 +453,46 @@ export default function ChatArea() {
 
       {/* Image Preview */}
       {imagePreview && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setImagePreview(null)}>
-          <button onClick={() => setImagePreview(null)} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white"><X className="w-6 h-6" /></button>
-          <div className="max-w-4xl max-h-[80vh]">
-            <img src={imagePreview.url} alt={imagePreview.name || 'Preview'} className="max-w-full max-h-[80vh] object-contain rounded-lg" />
-            <p className="text-center text-white/60 text-sm mt-2">{imagePreview.name}</p>
+        <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 animate-fade-in" onClick={() => setImagePreview(null)}>
+          <button onClick={() => setImagePreview(null)} className="absolute top-6 right-6 p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all active:scale-90">
+            <X className="w-5 h-5" />
+          </button>
+          <div className="max-w-4xl max-h-[85vh] animate-scale-in">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={imagePreview.url} alt={imagePreview.name || 'Image preview'} className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl" />
+            <p className="text-center text-white/50 text-sm mt-4 font-medium">{imagePreview.name}</p>
           </div>
         </div>
+      )}
+
+      {/* Group Info Panel */}
+      {showGroupInfo && conversation?.type === 'group' && conversation.group_info && (
+        <GroupInfoPanel
+          groupId={conversation.group_info.group_id}
+          onClose={() => setShowGroupInfo(false)}
+        />
+      )}
+
+      {/* Safety Number Modal */}
+      {conversation?.type === 'one_to_one' && (
+        <SafetyNumberModal
+          isOpen={showSafetyNumber}
+          onClose={() => setShowSafetyNumber(false)}
+          userId={conversation.other_user?.user_id || ''}
+          userName={convName}
+        />
       )}
     </div>
   );
 }
 
-function MessageBubble({ message, isOwn, showAvatar, onReply, onContextMenu, onPreview, onDownload, allMessages, onRetry }: {
-  message: Message; isOwn: boolean; showAvatar: boolean; onReply: () => void; onContextMenu: (e: React.MouseEvent) => void; onPreview: (d: FileData) => void; onDownload: (d: FileData) => void; allMessages: Message[]; onRetry: (tempId: string) => void;
+/* ── Message Bubble ── */
+
+function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPreview, onDownload, allMessages, onRetry }: {
+  message: Message; isOwn: boolean; showName: boolean;
+  onReply: () => void; onContextMenu: (e: React.MouseEvent) => void;
+  onPreview: (d: FileData) => void; onDownload: (d: FileData) => void;
+  allMessages: Message[]; onRetry: (tempId: string) => void;
 }) {
   const [showActions, setShowActions] = useState(false);
   const isFileMessage = message.message_type === 'file' || message.message_type === 'image';
@@ -378,90 +501,89 @@ function MessageBubble({ message, isOwn, showAvatar, onReply, onContextMenu, onP
   const replyToId = message.metadata?.reply_to_id;
   const repliedMessage = replyToId ? allMessages.find(m => m.id === replyToId) : null;
   const formatSize = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
-
   const isPending = message.status === 'pending';
   const isFailed = message.status === 'failed';
 
-  // Render message status indicator
   const renderStatus = () => {
     if (!isOwn) return null;
-
-    if (isFailed) {
-      return (
-        <button
-          onClick={() => message.tempId && onRetry(message.tempId)}
-          className="flex items-center gap-1 text-red-400 hover:text-red-300"
-          title="Failed to send. Click to retry."
-        >
-          <AlertCircle className="w-3.5 h-3.5" />
-          <RefreshCw className="w-3 h-3" />
-        </button>
-      );
-    }
-
-    if (isPending) {
-      return <Clock className="w-3.5 h-3.5 text-white/50 animate-pulse" />;
-    }
-
+    if (isFailed) return (
+      <button onClick={() => message.tempId && onRetry(message.tempId)} className="flex items-center gap-0.5 text-red-400" title="Retry">
+        <AlertCircle className="w-3 h-3" /><RefreshCw className="w-2.5 h-2.5" />
+      </button>
+    );
+    if (isPending) return <Clock className="w-3 h-3 opacity-50 animate-pulse" />;
     switch (message.status) {
-      case 'read':
-        return <CheckCheck className="w-3.5 h-3.5 text-blue-400 fill-blue-400/20" />;
-      case 'delivered':
-        return <CheckCheck className="w-3.5 h-3.5 text-white/70" />;
-      case 'sent':
-      default:
-        return <Check className="w-3.5 h-3.5 text-white/50" />;
+      case 'read': return <CheckCheck className="w-3.5 h-3.5 text-blue-400" />;
+      case 'delivered': return <CheckCheck className="w-3.5 h-3.5 opacity-50" />;
+      default: return <Check className="w-3 h-3 opacity-50" />;
     }
   };
 
   return (
-    <div className={cn('flex group', isOwn ? 'justify-end' : 'justify-start', !showAvatar && 'mt-0.5')} onContextMenu={onContextMenu} onMouseEnter={() => setShowActions(true)} onMouseLeave={() => setShowActions(false)}>
-      <div className={cn('max-w-[70%] flex', isOwn ? 'flex-row-reverse' : 'flex-row', 'items-end gap-2')}>
-        {!isOwn && showAvatar && <div className="w-7 h-7 bg-zynk-600 rounded-full flex items-center justify-center text-white text-xs font-medium flex-shrink-0">{getInitials(message.sender_display_name || message.sender_username || '?')}</div>}
-        {!isOwn && !showAvatar && <div className="w-7" />}
-        <div className="relative">
-          {showActions && !isFailed && (
-            <div className={cn('absolute -top-6 flex items-center gap-0.5 z-10', isOwn ? 'right-0' : 'left-0')}>
-              <button onClick={onReply} className="p-1 bg-[var(--bg-secondary)] rounded shadow text-[var(--text-muted)] hover:text-[var(--text-primary)]" title="Reply"><Reply className="w-3.5 h-3.5" /></button>
+    <div className={cn('flex group', isOwn ? 'justify-end' : 'justify-start', showName ? 'mt-3' : 'mt-0.5',
+      isOwn ? 'animate-msg-in-right' : 'animate-msg-in-left'
+    )}
+      onContextMenu={onContextMenu} onMouseEnter={() => setShowActions(true)} onMouseLeave={() => setShowActions(false)}>
+      <div className="max-w-[70%] lg:max-w-[55%] relative">
+        {showActions && !isFailed && (
+          <div className={cn('absolute -top-7 z-10', isOwn ? 'right-0' : 'left-0')}>
+            <button onClick={onReply} className="p-1.5 bg-[var(--bg-surface)] border border-[var(--border)] rounded-full shadow-sm text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors animate-scale-in">
+              <Reply className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
+        <div className={cn(
+          'px-3.5 py-2.5 rounded-2xl text-sm',
+          isOwn
+            ? 'rounded-br-sm bubble-own'
+            : 'rounded-bl-sm bubble-other',
+          isFailed && '!bg-red-600 text-white opacity-80',
+          isPending && 'opacity-60',
+        )}>
+          {!isOwn && showName && message.sender_username && (
+            <p className="text-xs font-semibold text-[var(--accent)] mb-0.5">{message.sender_display_name || message.sender_username}</p>
+          )}
+
+          {repliedMessage && (
+            <div className={cn('mb-1.5 border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
+              <p className={cn('font-medium text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
+              <p className={cn('truncate text-[11px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{repliedMessage.encrypted_content}</p>
             </div>
           )}
-          <div className={cn(
-            'px-3.5 py-2 rounded-2xl',
-            isOwn ? 'rounded-br-md' : 'rounded-bl-md',
-            isFailed ? 'bg-red-600/80 text-white' : isPending ? 'bg-zynk-600/70 text-white' : isOwn ? 'bg-zynk-600 text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
-          )}>
-            {!isOwn && showAvatar && message.sender_username && <p className="text-xs font-medium text-zynk-400 mb-0.5">{message.sender_display_name || message.sender_username}</p>}
-            {repliedMessage && (
-              <div className={cn('mb-1.5 border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 text-white/70' : 'border-zynk-500 text-[var(--text-muted)]')}>
-                <p className="font-medium">{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
-                <p className="truncate">{repliedMessage.encrypted_content}</p>
-              </div>
-            )}
-            {isFileMessage && fileData ? (
-              <div className={cn('rounded-lg p-2', isOwn ? 'bg-zynk-700' : 'bg-[var(--bg-primary)]')}>
-                {message.message_type === 'image' ? (
-                  <div className="cursor-pointer" onClick={() => onPreview(fileData!)}>
-                    <div className="flex items-center gap-2 mb-1"><Image className="w-4 h-4" /><span className="text-sm font-medium truncate">{fileData!.filename || 'Image'}</span></div>
-                    <div className="text-xs opacity-70">{fileData!.file_size && formatSize(fileData!.file_size)} · Click to preview</div>
+
+          {isFileMessage && fileData ? (
+            <div className={cn('rounded-lg p-2', isOwn ? 'bg-white/10' : 'bg-[var(--bg-app)]')}>
+              {message.message_type === 'image' ? (
+                <div className="cursor-pointer" onClick={() => onPreview(fileData!)}>
+                  <div className="flex items-center gap-2">
+                    {/* eslint-disable-next-line jsx-a11y/alt-text */}
+                    <Image className="w-4 h-4" />
+                    <span className="text-sm truncate">{fileData!.filename || 'Image'}</span>
                   </div>
-                ) : (
-                  <div>
-                    <div className="flex items-center gap-2 mb-1"><FileIcon className="w-4 h-4 flex-shrink-0" /><span className="text-sm font-medium truncate">{fileData.filename || 'File'}</span></div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs opacity-70">{fileData.file_size && formatSize(fileData.file_size)}</span>
-                      <button onClick={() => onDownload(fileData)} className={cn('p-1 rounded hover:opacity-80', isOwn ? 'text-white' : 'text-zynk-500')} title="Download"><Download className="w-4 h-4" /></button>
-                    </div>
+                  <div className={cn('text-xs mt-0.5', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{fileData!.file_size && formatSize(fileData!.file_size)} · Tap to view</div>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center gap-2">
+                    <FileIcon className="w-4 h-4 flex-shrink-0" />
+                    <span className="text-sm truncate">{fileData.filename || 'File'}</span>
                   </div>
-                )}
-              </div>
-            ) : (
-              <p className="text-sm whitespace-pre-wrap break-words">{message.encrypted_content}</p>
-            )}
-            <div className={cn('flex items-center gap-1 mt-1', isOwn ? 'justify-end' : 'justify-start')}>
-              {message.edited_at && <span className={cn('text-[10px]', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>edited</span>}
-              <span className={cn('text-[10px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{formatMessageTime(message.created_at)}</span>
-              {isOwn && <span className="text-white/60">{renderStatus()}</span>}
+                  <div className="flex items-center justify-between mt-0.5">
+                    <span className={cn('text-xs', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{fileData.file_size && formatSize(fileData.file_size)}</span>
+                    <button onClick={() => onDownload(fileData!)} className="p-1 rounded hover:bg-[var(--hover)]"><Download className="w-3.5 h-3.5" /></button>
+                  </div>
+                </div>
+              )}
             </div>
+          ) : (
+            <p className="leading-relaxed whitespace-pre-wrap break-words">{message.encrypted_content}</p>
+          )}
+
+          <div className={cn('flex items-center gap-1 mt-0.5 justify-end')}>
+            {message.edited_at && <span className={cn('text-[10px] italic', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>edited</span>}
+            <span className={cn('text-[10px] leading-none', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{formatMessageTime(message.created_at)}</span>
+            {renderStatus()}
           </div>
         </div>
       </div>

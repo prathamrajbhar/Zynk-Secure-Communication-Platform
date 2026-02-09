@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '@/lib/api';
+import { useCryptoStore } from '@/stores/cryptoStore';
 
 interface User {
   id: string;
@@ -55,6 +56,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const user = { id: user_id, ...userRes.data };
     localStorage.setItem('user', JSON.stringify(user));
     set({ user, isAuthenticated: true });
+
+    // Initialize E2EE crypto layer
+    useCryptoStore.getState().initialize(user_id, session_token).catch(console.error);
   },
 
   register: async (username, password) => {
@@ -66,12 +70,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const user = { id: user_id, username };
     localStorage.setItem('user', JSON.stringify(user));
     set({ user, isAuthenticated: true });
+
+    // Generate and upload E2EE keys on first registration
+    useCryptoStore.getState().initialize(user_id, session_token).catch(console.error);
   },
 
   logout: async () => {
     try {
       await api.post('/auth/logout');
     } catch {}
+    // Clear E2EE state
+    await useCryptoStore.getState().cleanup().catch(() => {});
     localStorage.removeItem('session_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');

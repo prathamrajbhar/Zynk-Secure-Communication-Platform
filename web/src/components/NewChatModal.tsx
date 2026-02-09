@@ -1,147 +1,117 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
-import { X, Search, MessageCircle, Loader2 } from 'lucide-react';
-import { getInitials } from '@/lib/utils';
+import { X, Search, Loader2, MessageCircle } from 'lucide-react';
+import { getInitials, cn } from '@/lib/utils';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 
-interface SearchUser {
-  user_id: string;
-  username: string;
-  display_name: string | null;
-  bio: string | null;
-  avatar_url: string | null;
-}
+interface SearchUser { user_id: string; username: string; display_name: string | null; }
+
+const avatarColors = ['bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500', 'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500'];
+function getColor(name: string) { let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return avatarColors[Math.abs(h) % avatarColors.length]; }
 
 export default function NewChatModal() {
-  const { showNewChat: showNewChatModal, setShowNewChat: setShowNewChatModal } = useUIStore();
-  const { startConversation, setActiveConversation, fetchConversations } = useChatStore();
+  const { showNewChat, setShowNewChat } = useUIStore();
+  const { fetchConversations, setActiveConversation } = useChatStore();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchUser[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    if (showNewChatModal) {
-      setTimeout(() => inputRef.current?.focus(), 100);
-    } else {
-      setQuery('');
-      setResults([]);
-    }
-  }, [showNewChatModal]);
 
   const handleSearch = (value: string) => {
     setQuery(value);
-
     if (debounceRef.current) clearTimeout(debounceRef.current);
-
-    if (value.trim().length < 2) {
-      setResults([]);
-      return;
-    }
-
+    if (value.trim().length < 2) { setResults([]); return; }
     debounceRef.current = setTimeout(async () => {
       setIsSearching(true);
-      try {
-        const res = await api.get('/users/search', { params: { query: value.trim() } });
-        setResults(res.data.users || res.data || []);
-      } catch {
-        toast.error('Search failed');
-      } finally {
-        setIsSearching(false);
-      }
+      try { const res = await api.get('/users/search', { params: { query: value.trim() } }); setResults(res.data.users || res.data || []); }
+      catch { toast.error('Search failed'); }
+      finally { setIsSearching(false); }
     }, 300);
   };
 
-  const handleStartChat = async (targetUser: SearchUser) => {
+  const startConversation = async (userId: string) => {
+    // Defensive validation - prevent empty body requests
+    if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+      console.error('[NewChatModal] Invalid userId:', userId);
+      toast.error('Invalid user selected');
+      return;
+    }
+    // Prevent rapid double-clicks
+    if (isStarting) return;
     setIsStarting(true);
     try {
-      const conversationId = await startConversation(targetUser.user_id);
-      if (conversationId) {
-        await fetchConversations();
-        setActiveConversation(conversationId);
-        setShowNewChatModal(false);
-      }
-    } catch {
-      toast.error('Failed to start conversation');
-    } finally {
-      setIsStarting(false);
-    }
+      const res = await api.post('/messages/conversations', { participant_id: userId });
+      await fetchConversations();
+      setActiveConversation(res.data.conversation_id);
+      setShowNewChat(false); setQuery(''); setResults([]);
+    } catch { toast.error('Failed to start conversation'); }
+    finally { setIsStarting(false); }
   };
 
-  if (!showNewChatModal) return null;
+  if (!showNewChat) return null;
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowNewChatModal(false)}>
-      <div
-        className="bg-[var(--bg-secondary)] rounded-xl max-w-md w-full shadow-2xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">New Chat</h3>
-          <button
-            onClick={() => setShowNewChatModal(false)}
-            className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
-          >
-            <X className="w-5 h-5" />
+    <div className="modal-overlay flex items-center justify-center p-4" onClick={() => setShowNewChat(false)}>
+      <div className="modal-content glass-card rounded-2xl max-w-sm w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[var(--accent-subtle)] flex items-center justify-center">
+              <MessageCircle className="w-4 h-4 text-[var(--accent)]" />
+            </div>
+            <h3 className="text-sm font-bold text-[var(--text-primary)]">New Chat</h3>
+          </div>
+          <button onClick={() => setShowNewChat(false)} className="btn-icon text-[var(--text-muted)]">
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Search */}
         <div className="p-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => handleSearch(e.target.value)}
-              className="input-field pl-10"
-              placeholder="Search by username..."
-            />
+          <div className="flex items-center gap-2.5 bg-[var(--bg-wash)] rounded-xl px-4 py-2.5 border border-transparent focus-within:border-[var(--accent-muted)] transition-colors">
+            <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
+            <input type="text" value={query} onChange={(e) => handleSearch(e.target.value)}
+              className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none"
+              placeholder="Search by username..." autoFocus />
           </div>
         </div>
 
-        {/* Results */}
-        <div className="max-h-72 overflow-y-auto">
+        <div className="max-h-64 overflow-y-auto scroll-thin">
           {isSearching ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-zynk-500" />
-            </div>
+            <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /></div>
           ) : results.length > 0 ? (
-            <div className="px-2 pb-2">
-              {results.map((u) => (
-                <button
-                  key={u.user_id}
-                  onClick={() => handleStartChat(u)}
-                  disabled={isStarting}
-                  className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-left"
-                >
-                  <div className="w-10 h-10 rounded-full bg-zynk-600 flex items-center justify-center text-white text-sm font-medium flex-shrink-0">
-                    {getInitials(u.display_name || u.username)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-[var(--text-primary)] truncate">
-                      {u.display_name || u.username}
-                    </p>
-                    <p className="text-xs text-[var(--text-muted)] truncate">@{u.username}</p>
-                  </div>
-                  <MessageCircle className="w-5 h-5 text-zynk-500 flex-shrink-0" />
-                </button>
-              ))}
+            results.map(u => (
+              <button key={u.user_id} onClick={() => startConversation(u.user_id)}
+                disabled={isStarting}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-all duration-200 text-left group disabled:opacity-50 disabled:pointer-events-none">
+                <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getColor(u.username))} key={`avatar-${u.user_id}`}>
+                  {getInitials(u.display_name || u.username)}
+                </div>
+                <div className="flex-1 min-w-0" key={`content-${u.user_id}`}>
+                  <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{u.display_name || u.username}</p>
+                  <p className="text-xs text-[var(--text-muted)] mt-0.5">@{u.username}</p>
+                </div>
+              </button>
+            ))
+          ) : query.length >= 2 && !isSearching ? (
+            <div className="text-center py-10 text-[var(--text-muted)]">
+              <div className="w-14 h-14 rounded-2xl bg-[var(--bg-wash)] flex items-center justify-center mx-auto mb-3">
+                <MessageCircle className="w-6 h-6 opacity-40" />
+              </div>
+              <p className="text-sm font-medium text-[var(--text-secondary)]">No users found</p>
+              <p className="text-xs mt-1">Try a different username</p>
             </div>
-          ) : query.trim().length >= 2 ? (
-            <p className="text-center text-sm text-[var(--text-muted)] py-8">No users found</p>
           ) : (
-            <p className="text-center text-sm text-[var(--text-muted)] py-8">
-              Type a username to search
-            </p>
+            <div className="text-center py-10 text-[var(--text-muted)]">
+              <div className="w-14 h-14 rounded-2xl bg-[var(--bg-wash)] flex items-center justify-center mx-auto mb-3">
+                <Search className="w-6 h-6 opacity-40" />
+              </div>
+              <p className="text-sm font-medium text-[var(--text-secondary)]">Find someone to chat with</p>
+              <p className="text-xs mt-1">Type a username to search</p>
+            </div>
           )}
         </div>
       </div>

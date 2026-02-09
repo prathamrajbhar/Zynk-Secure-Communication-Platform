@@ -9,6 +9,8 @@ import { ConversationType, MessageType, MessageStatus } from '@prisma/client';
 
 const router = Router();
 
+// Routes are defined further down for better organization
+
 // POST /messages - send message via REST
 const sendMessageSchema = z.object({
   conversation_id: z.string().uuid().optional(),
@@ -27,22 +29,17 @@ router.post('/', authenticate, validate(sendMessageSchema), async (req: AuthRequ
 
     // If no conversation_id, create or find one-to-one conversation
     if (!convId && recipient_id) {
-      // Check existing conversation between these users
+      // Find existing one-to-one conversation between exactly these two users
       const existing = await prisma.conversation.findFirst({
         where: {
           type: 'one_to_one',
-          participants: {
-            every: {
-              user_id: { in: [req.userId!, recipient_id] }
-            }
-          }
+          AND: [
+            { participants: { some: { user_id: req.userId! } } },
+            { participants: { some: { user_id: recipient_id } } },
+          ]
         },
         select: { id: true }
       });
-
-      // Note: The 'every' filter in Prisma can be tricky for exact matches.
-      // A more robust way might be to check if there are EXACTLY two participants with these IDs.
-      // But for Zynk, one_to_one only has 2 participants.
 
       if (existing) {
         convId = existing.id;
@@ -189,10 +186,23 @@ router.delete('/:messageId', authenticate, async (req: AuthRequest, res: Respons
         }
       });
     } else {
-      await prisma.messages.updateMany({
-        where: { id: messageId, sender_id: req.userId! },
-        data: { deleted_at: new Date() }
+      // Delete for me: any participant can hide a message from their own view
+      // Verify user is a participant in the message's conversation
+      const message = await prisma.messages.findUnique({
+        where: { id: messageId },
+        select: { conversation_id: true }
       });
+      if (message) {
+        const isParticipant = await prisma.conversationParticipant.findFirst({
+          where: { conversation_id: message.conversation_id, user_id: req.userId! }
+        });
+        if (isParticipant) {
+          await prisma.messages.update({
+            where: { id: messageId },
+            data: { deleted_at: new Date() }
+          });
+        }
+      }
     }
 
     return res.status(204).send();
@@ -315,6 +325,7 @@ router.post('/search', authenticate, async (req: AuthRequest, res: Response) => 
       message_id: m.id,
       conversation_id: m.conversation_id,
       sender_id: m.sender_id,
+      message_type: m.message_type,
       snippet: m.encrypted_content,
       created_at: m.created_at,
       sender_username: m.sender.username,
@@ -375,113 +386,229 @@ router.put('/conversations/:conversationId/read-all', authenticate, async (req: 
   }
 });
 
-// GET /messages/conversations/list - Get all conversations for user
-router.get('/conversations/list', authenticate, async (req: AuthRequest, res: Response) => {
-  try {
-    const conversations = await prisma.conversation.findMany({
-      where: {
-        participants: {
-          some: { user_id: req.userId! }
+// Helper to get conversation list (optimized - no N+1 queries)
+async function getUserConversations(userId: string) {
+  // Step 1: Get all conversations for user with basic data
+  const conversations = await prisma.conversation.findMany({
+    where: {
+      participants: {
+        some: { user_id: userId }
+      }
+    },
+    include: {
+      participants: {
+        where: { user_id: userId },
+        select: { last_read_at: true }
+      },
+      messages: {
+        where: { deleted_at: null },
+        orderBy: { created_at: 'desc' },
+        take: 1
+      },
+      group: {
+        select: {
+          id: true,
+          name: true,
+          avatar_url: true
         }
+      }
+    },
+    orderBy: { updated_at: 'desc' }
+  });
+
+  if (conversations.length === 0) {
+    return [];
+  }
+
+  const convIds = conversations.map(c => c.id);
+  const oneToOneConvIds = conversations.filter(c => c.type === 'one_to_one').map(c => c.id);
+
+  // Step 2: Batch fetch unread counts for ALL conversations in ONE query
+  const unreadCountsRaw = await prisma.messages.groupBy({
+    by: ['conversation_id'],
+    where: {
+      conversation_id: { in: convIds },
+      sender_id: { not: userId },
+      status: { not: 'read' },
+      deleted_at: null
+    },
+    _count: { id: true }
+  });
+
+  // Create lookup map for unread counts
+  const unreadCountMap = new Map<string, number>();
+  unreadCountsRaw.forEach(item => {
+    unreadCountMap.set(item.conversation_id, item._count.id);
+  });
+
+  // Step 3: Batch fetch OTHER participants for one-to-one conversations in ONE query
+  const otherParticipants = oneToOneConvIds.length > 0
+    ? await prisma.conversationParticipant.findMany({
+      where: {
+        conversation_id: { in: oneToOneConvIds },
+        user_id: { not: userId }
       },
       include: {
-        participants: {
-          where: { user_id: req.userId },
-          select: { last_read_at: true }
-        },
-        messages: {
-          where: { deleted_at: null },
-          orderBy: { created_at: 'desc' },
-          take: 1
-        },
-        group: {
+        user: {
           select: {
             id: true,
-            name: true,
-            avatar_url: true
-          }
-        }
-      },
-      orderBy: { updated_at: 'desc' }
-    });
-
-    const formattedConversations = await Promise.all(conversations.map(async (c) => {
-      const lastReadAt = c.participants[0]?.last_read_at || new Date(0);
-      const lastMessage = c.messages[0];
-
-      // Count unread (Prisma count is efficient)
-      const unreadCount = await prisma.messages.count({
-        where: {
-          conversation_id: c.id,
-          created_at: { gt: lastReadAt },
-          sender_id: { not: req.userId! },
-          deleted_at: null
-        }
-      });
-
-      // Get other user info for one_to_one
-      let otherUser = null;
-      let isOnline = false;
-      if (c.type === 'one_to_one') {
-        const otherParticipant = await prisma.conversationParticipant.findFirst({
-          where: {
-            conversation_id: c.id,
-            user_id: { not: req.userId! }
-          },
-          include: {
-            user: {
+            username: true,
+            profile: {
               select: {
-                id: true,
-                username: true,
-                profile: {
-                  select: {
-                    display_name: true,
-                    avatar_url: true,
-                    last_seen_at: true
-                  }
-                }
+                display_name: true,
+                avatar_url: true,
+                last_seen_at: true
               }
             }
           }
-        });
-
-        if (otherParticipant) {
-          // Check presence in Redis
-          try {
-            const presence = await redis.hGetAll(`presence:${otherParticipant.user.id}`);
-            isOnline = presence && presence.status === 'online';
-          } catch (e) { }
-
-          otherUser = {
-            user_id: otherParticipant.user.id,
-            username: otherParticipant.user.username,
-            display_name: otherParticipant.user.profile?.display_name,
-            avatar_url: otherParticipant.user.profile?.avatar_url,
-            last_seen_at: otherParticipant.user.profile?.last_seen_at
-          };
         }
       }
+    })
+    : [];
 
-      return {
-        id: c.id,
-        type: c.type,
-        updated_at: c.updated_at,
-        last_read_at: lastReadAt,
-        unread_count: unreadCount,
-        last_message: lastMessage?.encrypted_content,
-        last_message_at: lastMessage?.created_at,
-        last_message_sender_id: lastMessage?.sender_id,
-        other_user: otherUser,
-        is_online: isOnline,
-        group_info: c.group ? {
-          group_id: c.group.id,
-          name: c.group.name,
-          avatar_url: c.group.avatar_url
-        } : null
-      };
-    }));
+  // Create lookup map for other participants by conversation_id
+  const otherParticipantMap = new Map<string, typeof otherParticipants[0]>();
+  otherParticipants.forEach(p => {
+    otherParticipantMap.set(p.conversation_id, p);
+  });
 
-    // Re-sort by last message at or updated at if necessary, but keep updated_at as primary descending
+  // Step 4: Batch fetch online status from Redis
+  const otherUserIds = otherParticipants.map(p => p.user.id);
+  const presenceMap = new Map<string, boolean>();
+
+  if (otherUserIds.length > 0) {
+    try {
+      // Use Redis pipeline for batch presence lookup
+      const presenceKeys = otherUserIds.map(id => `presence:${id}`);
+      const pipeline = redis.multi();
+      presenceKeys.forEach(key => pipeline.hGetAll(key));
+      const presenceResults = await pipeline.exec();
+
+      otherUserIds.forEach((id, index) => {
+        const presence = presenceResults?.[index] as Record<string, string> | null;
+        presenceMap.set(id, presence?.status === 'online');
+      });
+    } catch {
+      // Redis unavailable - default to offline
+    }
+  }
+
+  // Step 5: Build final formatted conversations (no async operations inside loop!)
+  const formattedConversations = conversations.map(c => {
+    const lastReadAt = c.participants[0]?.last_read_at || new Date(0);
+    const lastMessage = c.messages[0];
+    const unreadCount = unreadCountMap.get(c.id) || 0;
+
+    let otherUser = null;
+    let isOnline = false;
+
+    if (c.type === 'one_to_one') {
+      const otherParticipant = otherParticipantMap.get(c.id);
+      if (otherParticipant) {
+        isOnline = presenceMap.get(otherParticipant.user.id) || false;
+        otherUser = {
+          user_id: otherParticipant.user.id,
+          username: otherParticipant.user.username,
+          display_name: otherParticipant.user.profile?.display_name,
+          avatar_url: otherParticipant.user.profile?.avatar_url,
+          last_seen_at: otherParticipant.user.profile?.last_seen_at
+        };
+      }
+    }
+
+    return {
+      id: c.id,
+      type: c.type,
+      updated_at: c.updated_at,
+      last_read_at: lastReadAt,
+      unread_count: unreadCount,
+      last_message: lastMessage?.encrypted_content,
+      last_message_at: lastMessage?.created_at,
+      last_message_sender_id: lastMessage?.sender_id,
+      other_user: otherUser,
+      is_online: isOnline,
+      group_info: c.group ? {
+        group_id: c.group.id,
+        name: c.group.name,
+        avatar_url: c.group.avatar_url
+      } : null
+    };
+  });
+
+  return formattedConversations;
+}
+
+// Schema for creating a conversation
+const createConversationSchema = z.object({
+  participant_id: z.string().uuid().optional(),
+  recipient_id: z.string().uuid().optional(),
+}).refine(data => data.participant_id || data.recipient_id, {
+  message: 'Either participant_id or recipient_id is required'
+});
+
+// /conversations - GET list or POST new
+router.route('/conversations')
+  .get(authenticate, async (req: AuthRequest, res: Response) => {
+    try {
+      const formattedConversations = await getUserConversations(req.userId!);
+      return res.json({ conversations: formattedConversations });
+    } catch (error) {
+      console.error('Get conversations error:', error);
+      return res.status(500).json({ error: 'Failed to fetch conversations' });
+    }
+  })
+  .post(authenticate, validate(createConversationSchema), async (req: AuthRequest, res: Response) => {
+    try {
+      const { participant_id, recipient_id } = req.body;
+      const targetUserId = participant_id || recipient_id;
+
+      if (!targetUserId) {
+        console.warn(`[POST /conversations] 400 - Missing recipient. Body:`, req.body);
+        return res.status(400).json({ error: 'participant_id or recipient_id required' });
+      }
+
+      console.log(`[POST /conversations] User ${req.userId} starting chat with ${targetUserId}`);
+
+      // Check existing conversation between exactly these two users
+      const existing = await prisma.conversation.findFirst({
+        where: {
+          type: 'one_to_one',
+          AND: [
+            { participants: { some: { user_id: req.userId! } } },
+            { participants: { some: { user_id: targetUserId } } },
+          ]
+        },
+        select: { id: true }
+      });
+
+      if (existing) {
+        return res.json({ conversation_id: existing.id });
+      }
+
+      // Create new
+      const conv = await prisma.conversation.create({
+        data: {
+          type: 'one_to_one',
+          participants: {
+            create: [
+              { user_id: req.userId!, role: 'member' },
+              { user_id: targetUserId, role: 'member' }
+            ]
+          }
+        }
+      });
+
+      return res.status(201).json({ conversation_id: conv.id });
+    } catch (error) {
+      console.error('Create conversation error:', error);
+      return res.status(500).json({ error: 'Failed to create conversation' });
+    }
+  });
+
+// GET /messages/conversations/list - Get all conversations for user (Legacy support)
+router.get('/conversations/list', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const formattedConversations = await getUserConversations(req.userId!);
     return res.json({ conversations: formattedConversations });
   } catch (error) {
     console.error('Get conversations error:', error);

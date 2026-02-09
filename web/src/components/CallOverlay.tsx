@@ -5,13 +5,33 @@ import { useCallStore } from '@/stores/callStore';
 import { cn, getInitials } from '@/lib/utils';
 import {
   Phone, PhoneOff, Video, VideoOff, Mic, MicOff,
-  PhoneIncoming, Volume2
+  PhoneIncoming, Volume2, Monitor, MonitorOff, Signal, SignalLow, SignalMedium, SignalHigh
 } from 'lucide-react';
+
+// Connection quality indicator component
+function ConnectionQualityBadge({ quality }: { quality: string }) {
+  const config: Record<string, { icon: React.ElementType; color: string; label: string }> = {
+    excellent: { icon: SignalHigh, color: 'text-green-400', label: 'Excellent' },
+    good: { icon: SignalMedium, color: 'text-green-400', label: 'Good' },
+    fair: { icon: SignalLow, color: 'text-yellow-400', label: 'Fair' },
+    poor: { icon: Signal, color: 'text-red-400', label: 'Poor' },
+    unknown: { icon: Signal, color: 'text-white/40', label: '' },
+  };
+  const { icon: Icon, color, label } = config[quality] || config.unknown;
+  if (quality === 'unknown') return null;
+  return (
+    <div className={`flex items-center gap-1 ${color}`}>
+      <Icon className="w-3.5 h-3.5" />
+      <span className="text-xs">{label}</span>
+    </div>
+  );
+}
 
 export default function CallOverlay() {
   const {
-    activeCall, isMuted, isVideoOff, remoteStream, localStream,
-    answerCall, endCall, declineCall, toggleMute, toggleVideo,
+    activeCall, isMuted, isVideoOff, isScreenSharing, remoteStream, localStream,
+    remoteMediaState, connectionQuality,
+    answerCall, endCall, declineCall, toggleMute, toggleVideo, toggleScreenShare,
   } = useCallStore();
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -21,6 +41,7 @@ export default function CallOverlay() {
 
   // Play ringtone for incoming calls only
   useEffect(() => {
+    const ringtone = ringtoneRef.current;
     if (!activeCall) return;
 
     const isRinging = activeCall.status === 'ringing';
@@ -28,27 +49,34 @@ export default function CallOverlay() {
     const isIncoming = activeCall.isIncoming;
 
     if ((isRinging || isInitiating) && isIncoming) {
-      // Play ringtone
-      if (ringtoneRef.current) {
-        ringtoneRef.current.loop = true;
-        ringtoneRef.current.volume = 0.5;
-        ringtoneRef.current.play().catch(err => console.log('Ringtone play failed:', err));
+      // Play ringtone for incoming calls
+      if (ringtone) {
+        ringtone.loop = true;
+        ringtone.volume = 0.5;
+        ringtone.play().catch(err => console.log('Ringtone play failed:', err));
+      }
+    } else if (isInitiating && !isIncoming) {
+      // Play ring-back tone for outgoing calls
+      if (ringtone) {
+        ringtone.loop = true;
+        ringtone.volume = 0.3;
+        ringtone.play().catch(err => console.log('Ring-back play failed:', err));
       }
     } else {
       // Stop ringtone when call connects or ends
-      if (ringtoneRef.current) {
-        ringtoneRef.current.pause();
-        ringtoneRef.current.currentTime = 0;
+      if (ringtone) {
+        ringtone.pause();
+        ringtone.currentTime = 0;
       }
     }
 
     return () => {
-      if (ringtoneRef.current) {
-        ringtoneRef.current.pause();
-        ringtoneRef.current.currentTime = 0;
+      if (ringtone) {
+        ringtone.pause();
+        ringtone.currentTime = 0;
       }
     };
-  }, [activeCall?.status]);
+  }, [activeCall]);
 
   // Attach local stream when video element is available
   useEffect(() => {
@@ -433,9 +461,14 @@ export default function CallOverlay() {
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2 bg-green-500/20 px-2 py-1 rounded-full">
-              <div className="w-2 h-2 rounded-full bg-green-500" />
-              <span className="text-green-400 text-xs">HD</span>
+            <div className="flex items-center gap-2">
+              <ConnectionQualityBadge quality={connectionQuality} />
+              {remoteMediaState.screen_sharing && (
+                <div className="flex items-center gap-1 bg-blue-500/20 px-2 py-1 rounded-full">
+                  <Monitor className="w-3 h-3 text-blue-400" />
+                  <span className="text-blue-400 text-xs">Screen</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -461,32 +494,46 @@ export default function CallOverlay() {
 
         {/* Bottom controls */}
         <div className="absolute bottom-0 left-0 right-0 z-10 p-6 bg-gradient-to-t from-black/80 to-transparent">
-          <div className="flex items-center justify-center gap-6">
+          <div className="flex items-center justify-center gap-4">
             <button
               onClick={toggleMute}
               className={cn(
-                'w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg',
+                'w-12 h-12 rounded-full flex items-center justify-center transition-all shadow-lg',
                 isMuted ? 'bg-white text-gray-900' : 'bg-white/20 text-white backdrop-blur'
               )}
+              title={isMuted ? 'Unmute' : 'Mute'}
             >
-              {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+              {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
 
             <button
               onClick={toggleVideo}
               className={cn(
-                'w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-lg',
+                'w-12 h-12 rounded-full flex items-center justify-center transition-all shadow-lg',
                 !isVideoEnabled ? 'bg-white text-gray-900' : 'bg-white/20 text-white backdrop-blur'
               )}
+              title={isVideoEnabled ? 'Turn off camera' : 'Turn on camera'}
             >
-              {isVideoEnabled ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
+              {isVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
+            </button>
+
+            <button
+              onClick={toggleScreenShare}
+              className={cn(
+                'w-12 h-12 rounded-full flex items-center justify-center transition-all shadow-lg',
+                isScreenSharing ? 'bg-blue-500 text-white' : 'bg-white/20 text-white backdrop-blur'
+              )}
+              title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
+            >
+              {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
             </button>
 
             <button
               onClick={endCall}
-              className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white transition-all shadow-xl"
+              className="w-14 h-14 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white transition-all shadow-xl"
+              title="End call"
             >
-              <PhoneOff className="w-7 h-7" />
+              <PhoneOff className="w-6 h-6" />
             </button>
           </div>
         </div>
@@ -516,6 +563,7 @@ export default function CallOverlay() {
           <p className="text-emerald-400 text-lg flex items-center gap-2">
             <CallTimer />
           </p>
+          <ConnectionQualityBadge quality={connectionQuality} />
 
           {/* Audio wave indicator */}
           <div className="flex items-center gap-1 mt-6">

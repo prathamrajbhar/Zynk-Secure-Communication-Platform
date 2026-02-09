@@ -37,3 +37,21 @@ export function truncate(text: string, length: number): string {
   if (text.length <= length) return text;
   return text.slice(0, length) + '...';
 }
+
+export function formatLastMessage(content: string, length: number = 40): string {
+  if (!content) return '';
+
+  // Check if it's a JSON string (likely a file/image message)
+  if (content.startsWith('{') && content.endsWith('}')) {
+    try {
+      const data = JSON.parse(content);
+      if (data.filename) {
+        return `File: ${data.filename}`;
+      }
+    } catch {
+      // Not valid JSON or missing filename, treat as plain text
+    }
+  }
+
+  return truncate(content, length);
+}
