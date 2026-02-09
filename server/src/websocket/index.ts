@@ -123,15 +123,33 @@ export function setupWebSocket(httpServer: HTTPServer) {
     transports: ['websocket', 'polling'],
   });
 
-  // Authentication middleware
+  // Authentication middleware with session validation
   io.use(async (socket: AuthenticatedSocket, next) => {
     try {
-      const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.split(' ')[1];
-      if (!token) {
+      const token = socket.handshake.auth.token;
+      // SECURITY: Only accept token from auth object, not from headers or query
+      // to prevent token leakage in logs
+      if (!token || typeof token !== 'string') {
         return next(new Error('Authentication required'));
       }
 
       const decoded = jwt.verify(token, config.jwt.secret) as { userId: string; deviceId: string };
+
+      // SECURITY: Validate session exists in database (supports revocation)
+      const session = await prisma.session.findFirst({
+        where: {
+          user_id: decoded.userId,
+          device_id: decoded.deviceId,
+          session_token: token,
+          expires_at: { gt: new Date() },
+        },
+        select: { id: true }
+      });
+
+      if (!session) {
+        return next(new Error('Session expired or revoked'));
+      }
+
       socket.userId = decoded.userId;
       socket.deviceId = decoded.deviceId;
       next();
@@ -142,7 +160,9 @@ export function setupWebSocket(httpServer: HTTPServer) {
 
   io.on('connection', async (socket: AuthenticatedSocket) => {
     const userId = socket.userId!;
-    console.log(`User connected: ${userId} (socket: ${socket.id})`);
+    if (config.nodeEnv !== 'production') {
+      console.log(`User connected: ${userId} (socket: ${socket.id})`);
+    }
 
     // Track connection
     if (!userSockets.has(userId)) {
@@ -225,10 +245,24 @@ export function setupWebSocket(httpServer: HTTPServer) {
 
     // ============== MESSAGE EVENTS ==============
 
-    // Send message
+    // Send message — with input validation
     socket.on('message:send', async (data) => {
       try {
         const { conversation_id, recipient_id, encrypted_content, message_type = 'text', reply_to_id, temp_id } = data;
+
+        // SECURITY: Validate inputs to prevent injection
+        if (encrypted_content && typeof encrypted_content !== 'string') {
+          return socket.emit('error', { message: 'Invalid message format' });
+        }
+        if (encrypted_content && encrypted_content.length > 65536) {
+          return socket.emit('error', { message: 'Message too large' });
+        }
+        if (recipient_id && typeof recipient_id !== 'string') {
+          return socket.emit('error', { message: 'Invalid recipient' });
+        }
+        if (!['text', 'image', 'file', 'audio', 'video'].includes(message_type)) {
+          return socket.emit('error', { message: 'Invalid message type' });
+        }
 
         let convId = conversation_id;
 
@@ -829,7 +863,11 @@ export function setupWebSocket(httpServer: HTTPServer) {
             callRingTimeouts.set(`disconnect:${userId}`, disconnectCallTimeout);
           }
 
-          // Set user as offline
+          // Broadcast offline status FIRST before async DB operations
+          // Use io.except() instead of socket.broadcast as socket may be invalid during disconnect
+          io.except(socket.id).emit('user:offline', { user_id: userId, last_seen: new Date().toISOString() });
+
+          // Set user as offline (best-effort, don't delay broadcast)
           try {
             await redis.hSet(`presence:${userId}`, {
               status: 'offline',
@@ -848,8 +886,6 @@ export function setupWebSocket(httpServer: HTTPServer) {
             // Profile update is best-effort; don't crash on disconnect
             console.warn('Failed to update profile on disconnect:', (e as Error).message);
           }
-
-          socket.broadcast.emit('user:offline', { user_id: userId, last_seen: new Date().toISOString() });
         }
       }
       socketUsers.delete(socket.id);

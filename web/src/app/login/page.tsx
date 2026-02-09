@@ -6,6 +6,15 @@ import Link from 'next/link';
 import { useAuthStore } from '@/stores/authStore';
 import { Eye, EyeOff, Loader2, ArrowRight } from 'lucide-react';
 import toast from 'react-hot-toast';
+import DeviceLimitModal from '@/components/DeviceLimitModal';
+
+interface DeviceInfo {
+  id: string;
+  device_name: string;
+  platform: string;
+  last_active_at: string;
+  created_at: string;
+}
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -13,7 +22,10 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState<string | null>(null);
-  const { login } = useAuthStore();
+  const [deviceLimitDevices, setDeviceLimitDevices] = useState<DeviceInfo[] | null>(null);
+  const [maxDevices, setMaxDevices] = useState(5);
+  const [forceLoginLoading, setForceLoginLoading] = useState(false);
+  const { login, forceLogin } = useAuthStore();
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -25,9 +37,29 @@ export default function LoginPage() {
       toast.success('Welcome back!');
       router.push('/chat');
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { error?: string } } };
-      toast.error(err.response?.data?.error || 'Login failed');
+      const err = error as { response?: { status?: number; data?: { error?: string; code?: string; devices?: DeviceInfo[]; max_devices?: number } } };
+      if (err.response?.status === 403 && err.response?.data?.code === 'MAX_DEVICES_REACHED' && err.response?.data?.devices) {
+        setDeviceLimitDevices(err.response.data.devices);
+        if (err.response.data.max_devices) {
+          setMaxDevices(err.response.data.max_devices);
+        }
+      } else {
+        toast.error(err.response?.data?.error || 'Login failed');
+      }
     } finally { setLoading(false); }
+  };
+
+  const handleForceLogin = async (removeDeviceId: string) => {
+    setForceLoginLoading(true);
+    try {
+      await forceLogin(username, password, removeDeviceId);
+      setDeviceLimitDevices(null);
+      toast.success('Signed in successfully!');
+      router.push('/chat');
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
+      toast.error(err.response?.data?.error || 'Failed to remove device and sign in');
+    } finally { setForceLoginLoading(false); }
   };
 
   return (
@@ -122,6 +154,17 @@ export default function LoginPage() {
           </Link>
         </p>
       </div>
+
+      {/* Device Limit Modal */}
+      {deviceLimitDevices && (
+        <DeviceLimitModal
+          devices={deviceLimitDevices}
+          maxDevices={maxDevices}
+          onRemoveAndLogin={handleForceLogin}
+          onCancel={() => setDeviceLimitDevices(null)}
+          loading={forceLoginLoading}
+        />
+      )}
     </div>
   );
 }

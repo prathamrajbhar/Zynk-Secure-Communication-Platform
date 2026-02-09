@@ -217,6 +217,9 @@ router.post('/contacts', authenticate, async (req: AuthRequest, res: Response) =
 // GET /users/contacts/list
 router.get('/contacts/list', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+
     const contacts = await prisma.contact.findMany({
       where: {
         user_id: req.userId!,
@@ -241,7 +244,9 @@ router.get('/contacts/list', authenticate, async (req: AuthRequest, res: Respons
       orderBy: [
         { contact: { profile: { display_name: 'asc' } } },
         { contact: { username: 'asc' } }
-      ]
+      ],
+      take: limit,
+      skip: offset
     });
 
     const formattedContacts = contacts.map(c => ({
@@ -256,7 +261,7 @@ router.get('/contacts/list', authenticate, async (req: AuthRequest, res: Respons
       last_seen_at: c.contact.profile?.last_seen_at
     }));
 
-    return res.json({ contacts: formattedContacts });
+    return res.json({ contacts: formattedContacts, offset, limit });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to fetch contacts' });
   }

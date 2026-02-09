@@ -172,9 +172,9 @@ export default function ChatArea() {
 
   const handleFilePreview = (fileData: FileData) => {
     if (fileData?.mime_type?.startsWith('image/')) {
-      const token = localStorage.getItem('session_token');
       const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
-      const url = `${baseUrl}/files/${fileData.file_id}/download${token ? `?token=${token}` : ''}`;
+      // SECURITY: Never put auth tokens in URLs - use Authorization header instead
+      const url = `${baseUrl}/files/${fileData.file_id}/download`;
       setImagePreview({ url, name: fileData.filename });
     }
   };

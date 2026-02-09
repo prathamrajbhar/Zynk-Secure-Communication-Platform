@@ -17,6 +17,7 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (username: string, password: string) => Promise<void>;
+  forceLogin: (username: string, password: string, removeDeviceId: string) => Promise<void>;
   register: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   fetchUser: () => Promise<void>;
@@ -57,8 +58,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem('user', JSON.stringify(user));
     set({ user, isAuthenticated: true });
 
+    // Initialize E2EE crypto layer with PASSWORD (not session token)
+    // The password is used to derive a local-only encryption key for IndexedDB
+    // This ensures the server can never read local key material
+    try {
+      await useCryptoStore.getState().initialize(user_id, password);
+    } catch (error) {
+      console.error('E2EE initialization failed:', error);
+      // Continue login but warn user about encryption status
+    }
+  },
+
+  forceLogin: async (username, password, removeDeviceId) => {
+    const res = await api.post('/auth/force-login', {
+      username,
+      password,
+      remove_device_id: removeDeviceId,
+    });
+    const { user_id, session_token, refresh_token } = res.data;
+    localStorage.setItem('session_token', session_token);
+    localStorage.setItem('refresh_token', refresh_token);
+
+    // Fetch full user profile
+    const userRes = await api.get('/auth/me');
+    const user = { id: user_id, ...userRes.data };
+    localStorage.setItem('user', JSON.stringify(user));
+    set({ user, isAuthenticated: true });
+
     // Initialize E2EE crypto layer
-    useCryptoStore.getState().initialize(user_id, session_token).catch(console.error);
+    try {
+      await useCryptoStore.getState().initialize(user_id, password);
+    } catch (error) {
+      console.error('E2EE initialization failed:', error);
+    }
   },
 
   register: async (username, password) => {
@@ -72,7 +104,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user, isAuthenticated: true });
 
     // Generate and upload E2EE keys on first registration
-    useCryptoStore.getState().initialize(user_id, session_token).catch(console.error);
+    // Use PASSWORD for local key derivation (not session token)
+    try {
+      await useCryptoStore.getState().initialize(user_id, password);
+    } catch (error) {
+      console.error('E2EE key generation failed:', error);
+    }
   },
 
   logout: async () => {

@@ -1,3 +1,17 @@
+// ============================================================================
+// Zynk — Secure Communication Platform
+// Prisma Schema (PostgreSQL)
+//
+// This schema is derived from deep analysis of:
+//   - All server routes (auth, users, messages, groups, calls, files, keys)
+//   - WebSocket handler (message delivery, call signaling, presence)
+//   - Auth middleware (session validation)
+//   - Push notification service (device tokens)
+//   - Data model documentation (docs/6_data_model.md)
+//
+// Every model, field, relation, and index maps directly to actual code usage.
+// ============================================================================
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -6,6 +20,9 @@ datasource db {
   provider = "postgresql"
 }
 
+// ======================== Enums ========================
+
+/// Device platform — used in Device model and auth routes
 enum Platform {
   web
   ios
@@ -13,16 +30,19 @@ enum Platform {
   desktop
 }
 
+/// Conversation type — one-to-one DMs or group chats
 enum ConversationType {
   one_to_one
   group
 }
 
+/// Encryption type — always e2ee for Zynk, standard as fallback
 enum EncryptionType {
   e2ee
   standard
 }
 
+/// Message content type — determines how client renders the message
 enum MessageType {
   text
   image
@@ -33,6 +53,7 @@ enum MessageType {
   contact
 }
 
+/// Message delivery status — tracks sent → delivered → read lifecycle
 enum MessageStatus {
   sent
   delivered
@@ -40,17 +61,20 @@ enum MessageStatus {
   failed
 }
 
+/// Role within a conversation or group
 enum ParticipantRole {
   member
   admin
   moderator
 }
 
+/// Call type — audio or video
 enum CallType {
   audio
   video
 }
 
+/// Call lifecycle status
 enum CallStatus {
   initiated
   ringing
@@ -60,72 +84,86 @@ enum CallStatus {
   declined
 }
 
+// ======================== Core User Models ========================
+
+/// Core user account — referenced by nearly every other model
+/// Used in: auth (register/login), users (search/profile), messages, groups, calls, keys
 model User {
-  id                String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  username          String                    @unique @db.VarChar(64)
-  password_hash     String                    @db.VarChar(255)
-  public_key        String?
-  created_at        DateTime                  @default(now()) @db.Timestamp(6)
-  updated_at        DateTime                  @default(now()) @db.Timestamp(6)
-  
-  profile           UserProfile?
-  devices           Device[]
-  sessions          Session[]
-  participants      ConversationParticipant[]
-  messages          Messages[]
-  groupsCreated     Group[]                   @relation("GroupsCreated")
-  groupMembers      GroupMember[]             @relation("UserGroupMembers")
-  groupsInvited     GroupMember[]             @relation("InvitedBy")
-  files             File[]
-  callsInitiated    Call[]                    @relation("CallsInitiated")
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  username      String   @unique @db.VarChar(64)
+  password_hash String   @db.VarChar(255) // bcrypt hash
+  public_key    String?  // Signal Protocol identity key (set during key upload)
+  created_at    DateTime @default(now()) @db.Timestamp(6)
+  updated_at    DateTime @default(now()) @updatedAt @db.Timestamp(6)
+
+  // Relations
+  profile            UserProfile?
+  devices            Device[]
+  sessions           Session[]
+  participants       ConversationParticipant[]
+  messages           Messages[]
+  groupsCreated      Group[]           @relation("GroupsCreated")
+  groupMembers       GroupMember[]      @relation("UserGroupMembers")
+  groupsInvited      GroupMember[]      @relation("InvitedBy")
+  files              File[]
+  callsInitiated     Call[]            @relation("CallsInitiated")
   callParticipations CallParticipant[]
-  contacts          Contact[]                 @relation("UserContacts")
-  contactOf         Contact[]                 @relation("ContactOf")
-  identityKeys      IdentityKey[]
-  signedPreKeys     SignedPreKey[]
-  preKeys           PreKey[]
+  contacts           Contact[]         @relation("UserContacts")
+  contactOf          Contact[]         @relation("ContactOf")
+  identityKeys       IdentityKey[]
+  signedPreKeys      SignedPreKey[]
+  preKeys            PreKey[]
 
   @@map("users")
   @@index([username], map: "idx_users_username")
 }
 
+/// User profile — 1:1 extension of User for display info and privacy settings
+/// Used in: auth/me, users (update profile, privacy, search), messages (sender info), websocket (disconnect)
 model UserProfile {
-  user_id          String   @id @db.Uuid
-  display_name     String?  @db.VarChar(255)
+  user_id          String    @id @db.Uuid
+  display_name     String?   @db.VarChar(255)
   avatar_url       String?
   bio              String?
   last_seen_at     DateTime? @db.Timestamp(6)
-  privacy_settings Json     @default("{\"show_last_seen\": true, \"show_online_status\": true, \"allow_read_receipts\": true, \"allow_proximity_discovery\": true}")
-  created_at       DateTime @default(now()) @db.Timestamp(6)
-  updated_at       DateTime @default(now()) @db.Timestamp(6)
-  
-  user             User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  privacy_settings Json      @default("{\"show_last_seen\": true, \"show_online_status\": true, \"allow_read_receipts\": true, \"allow_proximity_discovery\": true}")
+  created_at       DateTime  @default(now()) @db.Timestamp(6)
+  updated_at       DateTime  @default(now()) @updatedAt @db.Timestamp(6)
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("user_profiles")
 }
 
-model Device {
-  id                 String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id            String     @db.Uuid
-  device_name        String?    @db.VarChar(255)
-  device_fingerprint String     @unique @db.VarChar(64)
-  public_key         String?
-  push_token         String?
-  platform           Platform   @default(web)
-  last_active_at     DateTime?  @db.Timestamp(6)
-  created_at         DateTime   @default(now()) @db.Timestamp(6)
-  
-  user               User       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  sessions           Session[]
-  identityKeys       IdentityKey[]
-  signedPreKeys      SignedPreKey[]
-  preKeys            PreKey[]
+// ======================== Device & Session Management ========================
 
+/// Registered device — tracks per-device push tokens, fingerprints, and key material
+/// Used in: auth (register/login/devices), keys (identity/pre-key per device), push notifications
+model Device {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String    @db.Uuid
+  device_name        String?   @db.VarChar(255)
+  device_fingerprint String    @db.VarChar(64)
+  public_key         String?   // Device-specific Signal Protocol key
+  push_token         String?   // FCM/APNs token for push notifications
+  platform           Platform  @default(web)
+  last_active_at     DateTime? @db.Timestamp(6)
+  created_at         DateTime  @default(now()) @db.Timestamp(6)
+
+  user          User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sessions      Session[]
+  identityKeys  IdentityKey[]
+  signedPreKeys SignedPreKey[]
+  preKeys       PreKey[]
+
+  @@unique([user_id, device_fingerprint], map: "uq_devices_user_fingerprint")
   @@map("devices")
-  @@index([device_fingerprint], map: "idx_devices_fingerprint")
   @@index([user_id], map: "idx_devices_user_id")
+  @@index([device_fingerprint], map: "idx_devices_fingerprint")
 }
 
+/// Authenticated session — JWT session + refresh token pair per device
+/// Used in: auth (register/login/refresh/logout), middleware (session validation), websocket auth
 model Session {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id            String   @db.Uuid
@@ -136,41 +174,50 @@ model Session {
   refresh_expires_at DateTime @db.Timestamp(6)
   created_at         DateTime @default(now()) @db.Timestamp(6)
   last_used_at       DateTime @default(now()) @db.Timestamp(6)
-  
-  user               User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  device             Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("sessions")
   @@index([session_token], map: "idx_sessions_token")
   @@index([user_id], map: "idx_sessions_user")
+  @@index([device_id], map: "idx_sessions_device")
+  @@index([expires_at], map: "idx_sessions_expires")
 }
 
+// ======================== Conversations & Messages ========================
+
+/// Conversation — container for messages between users (1:1 or group)
+/// Used in: messages (create/find/list), groups (linked via conversation_id), calls, websocket rooms
 model Conversation {
-  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  type            ConversationType          @default(one_to_one)
-  encryption_type EncryptionType            @default(e2ee)
-  created_at      DateTime                  @default(now()) @db.Timestamp(6)
-  updated_at      DateTime                  @default(now()) @db.Timestamp(6)
-  
-  participants    ConversationParticipant[]
-  messages        Messages[]
-  group           Group?
-  files           File[]
-  calls           Call[]
+  id              String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type            ConversationType   @default(one_to_one)
+  encryption_type EncryptionType     @default(e2ee)
+  created_at      DateTime           @default(now()) @db.Timestamp(6)
+  updated_at      DateTime           @default(now()) @db.Timestamp(6)
+
+  participants ConversationParticipant[]
+  messages     Messages[]
+  group        Group?
+  files        File[]
+  calls        Call[]
 
   @@map("conversations")
+  @@index([type], map: "idx_conversations_type")
   @@index([updated_at(sort: Desc)], map: "idx_conversations_updated")
 }
 
+/// Conversation participant — junction table linking users to conversations with roles
+/// Used in: messages (access check, unread counts, read receipts), groups, websocket (room join)
 model ConversationParticipant {
-  conversation_id String          @db.Uuid
-  user_id         String          @db.Uuid
+  conversation_id String           @db.Uuid
+  user_id         String           @db.Uuid
   role            ParticipantRole? @default(member)
-  joined_at       DateTime        @default(now()) @db.Timestamp(6)
-  last_read_at    DateTime?       @db.Timestamp(6)
-  
-  conversation    Conversation    @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user            User            @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  joined_at       DateTime         @default(now()) @db.Timestamp(6)
+  last_read_at    DateTime?        @db.Timestamp(6)
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([conversation_id, user_id])
   @@map("conversation_participants")
@@ -178,182 +225,220 @@ model ConversationParticipant {
   @@index([user_id], map: "idx_participants_user")
 }
 
+/// Message — E2EE encrypted message within a conversation
+/// Named "Messages" (plural) to match existing code: prisma.messages.*
+/// Used in: messages (CRUD, search, read receipts), websocket (send, delivery, read status)
 model Messages {
   id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   conversation_id   String        @db.Uuid
   sender_id         String        @db.Uuid
-  encrypted_content String
-  content_hash      String?       @db.VarChar(64)
+  encrypted_content String        // E2EE encrypted — server cannot read
+  content_hash      String?       @db.VarChar(64) // SHA-256 for integrity
   message_type      MessageType   @default(text)
-  metadata          Json?
+  metadata          Json?         // reply_to_id, mentions, reactions, edited flag
   status            MessageStatus @default(sent)
-  expires_at        DateTime?     @db.Timestamp(6)
+  expires_at        DateTime?     @db.Timestamp(6) // Self-destructing messages
   created_at        DateTime      @default(now()) @db.Timestamp(6)
   edited_at         DateTime?     @db.Timestamp(6)
-  deleted_at        DateTime?     @db.Timestamp(6)
-  
-  conversation      Conversation  @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  sender            User          @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  deleted_at        DateTime?     @db.Timestamp(6) // Soft delete
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender       User         @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("messages")
   @@index([conversation_id, created_at(sort: Desc)], map: "idx_messages_conversation")
   @@index([sender_id], map: "idx_messages_sender")
+  @@index([status, created_at], map: "idx_messages_status")
+  @@index([expires_at], map: "idx_messages_expires")
 }
 
+// ======================== Groups ========================
+
+/// Group — named group chat with member management, linked to a Conversation
+/// Used in: groups (CRUD, member management), messages (conversation listing with group info)
 model Group {
-  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name            String          @db.VarChar(255)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String    @db.VarChar(255)
   description     String?
   avatar_url      String?
-  conversation_id String?         @unique @db.Uuid
-  max_members     Int?            @default(256)
-  created_by      String          @db.Uuid
-  created_at      DateTime        @default(now()) @db.Timestamp(6)
-  updated_at      DateTime        @default(now()) @db.Timestamp(6)
-  
-  conversation    Conversation?   @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  creator         User            @relation("GroupsCreated", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  members         GroupMember[]
+  conversation_id String?   @unique @db.Uuid
+  max_members     Int?      @default(256)
+  created_by      String    @db.Uuid
+  created_at      DateTime  @default(now()) @db.Timestamp(6)
+  updated_at      DateTime  @default(now()) @db.Timestamp(6)
+
+  conversation Conversation? @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  creator      User          @relation("GroupsCreated", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  members      GroupMember[]
 
   @@map("groups")
   @@index([created_by], map: "idx_groups_created_by")
+  @@index([created_at(sort: Desc)], map: "idx_groups_created_at")
 }
 
+/// Group member — junction table for group membership with roles and invitations
+/// Used in: groups (create, get, add/remove members, my/list, admin checks)
 model GroupMember {
-  group_id      String          @db.Uuid
-  user_id       String          @db.Uuid
-  role          ParticipantRole @default(member)
-  joined_at     DateTime        @default(now()) @db.Timestamp(6)
-  invited_by    String?         @db.Uuid
-  
-  group         Group           @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user          User            @relation("UserGroupMembers", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  inviter       User?           @relation("InvitedBy", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  group_id   String          @db.Uuid
+  user_id    String          @db.Uuid
+  role       ParticipantRole @default(member)
+  joined_at  DateTime        @default(now()) @db.Timestamp(6)
+  invited_by String?         @db.Uuid
+
+  group   Group @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user    User  @relation("UserGroupMembers", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  inviter User? @relation("InvitedBy", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([group_id, user_id])
   @@map("group_members")
   @@index([user_id], map: "idx_group_members_user")
 }
 
+// ======================== File Sharing ========================
+
+/// File — uploaded file metadata with soft delete support
+/// Used in: files (upload, download, get metadata, delete, list by conversation)
 model File {
-  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  uploader_id     String        @db.Uuid
-  conversation_id String?       @db.Uuid
-  filename        String        @db.VarChar(255)
-  file_size       BigInt
-  mime_type       String?       @db.VarChar(100)
-  storage_path    String
-  content_hash    String?       @db.VarChar(64)
-  thumbnail_path  String?
-  metadata        Json?
-  expires_at      DateTime?     @db.Timestamp(6)
-  created_at      DateTime      @default(now()) @db.Timestamp(6)
-  deleted_at      DateTime?     @db.Timestamp(6)
-  
-  conversation    Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
-  uploader        User          @relation(fields: [uploader_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  uploader_id     String    @db.Uuid
+  conversation_id String?   @db.Uuid
+  filename        String    @db.VarChar(255) // Original filename
+  file_size       BigInt    // Size in bytes
+  mime_type       String?   @db.VarChar(100)
+  storage_path    String    // Server-side storage filename
+  content_hash    String?   @db.VarChar(64) // SHA-256 for integrity/ETag
+  thumbnail_path  String?   // Generated thumbnail filename
+  metadata        Json?     // original_name, dimensions, duration, etc.
+  expires_at      DateTime? @db.Timestamp(6)
+  created_at      DateTime  @default(now()) @db.Timestamp(6)
+  deleted_at      DateTime? @db.Timestamp(6) // Soft delete
+
+  conversation Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
+  uploader     User          @relation(fields: [uploader_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("files")
-  @@index([conversation_id], map: "idx_files_conversation")
   @@index([uploader_id], map: "idx_files_uploader")
+  @@index([conversation_id], map: "idx_files_conversation")
+  @@index([created_at(sort: Desc)], map: "idx_files_created")
+  @@index([expires_at], map: "idx_files_expires")
 }
 
+// ======================== Voice & Video Calls ========================
+
+/// Call — tracks call lifecycle from initiation to completion
+/// Used in: calls (initiate, answer, end, decline, status, history), websocket (signaling)
 model Call {
-  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  initiator_id      String            @db.Uuid
-  call_type         CallType
-  status            CallStatus        @default(initiated)
-  conversation_id   String?           @db.Uuid
-  started_at        DateTime?         @db.Timestamp(6)
-  ended_at          DateTime?         @db.Timestamp(6)
-  duration_seconds  Int?
-  created_at        DateTime          @default(now()) @db.Timestamp(6)
-  
-  conversation      Conversation?     @relation(fields: [conversation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  initiator         User              @relation("CallsInitiated", fields: [initiator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  participants      CallParticipant[]
+  id               String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  initiator_id     String     @db.Uuid
+  call_type        CallType
+  status           CallStatus @default(initiated)
+  conversation_id  String?    @db.Uuid
+  started_at       DateTime?  @db.Timestamp(6) // Set when answered
+  ended_at         DateTime?  @db.Timestamp(6)
+  duration_seconds Int?       // Computed on end
+  created_at       DateTime   @default(now()) @db.Timestamp(6)
+
+  conversation Conversation?   @relation(fields: [conversation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  initiator    User             @relation("CallsInitiated", fields: [initiator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  participants CallParticipant[]
 
   @@map("calls")
   @@index([initiator_id], map: "idx_calls_initiator")
+  @@index([conversation_id], map: "idx_calls_conversation")
+  @@index([created_at(sort: Desc)], map: "idx_calls_created")
+  @@index([status], map: "idx_calls_status")
 }
 
+/// Call participant — tracks who joined/left a call and when
+/// Used in: calls (initiate, answer, end), websocket (call handling, cleanup on disconnect)
 model CallParticipant {
   call_id   String    @db.Uuid
   user_id   String    @db.Uuid
   joined_at DateTime? @db.Timestamp(6)
   left_at   DateTime? @db.Timestamp(6)
-  
-  call      Call      @relation(fields: [call_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user      User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  call Call @relation(fields: [call_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([call_id, user_id])
   @@map("call_participants")
   @@index([user_id], map: "idx_call_participants_user")
 }
 
+// ======================== Contacts ========================
+
+/// Contact — user's contact list with blocking support
+/// Used in: users (add/remove/list contacts, block/unblock, blocked list)
 model Contact {
   user_id    String   @db.Uuid
   contact_id String   @db.Uuid
   nickname   String?  @db.VarChar(255)
-  blocked    Boolean? @default(false)
+  blocked    Boolean  @default(false) // Non-nullable — always has a definite state
   created_at DateTime @default(now()) @db.Timestamp(6)
-  
-  user       User     @relation("UserContacts", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  contact    User     @relation("ContactOf", fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  user    User @relation("UserContacts", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact User @relation("ContactOf", fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([user_id, contact_id])
   @@map("contacts")
   @@index([user_id], map: "idx_contacts_user")
   @@index([contact_id], map: "idx_contacts_contact")
+  @@index([user_id, blocked], map: "idx_contacts_user_blocked")
 }
 
-// ========== E2EE Key Management ==========
+// ======================== E2EE Key Management (Signal Protocol) ========================
 
+/// Identity key — long-term identity key per user+device pair
+/// Used in: keys (upload with upsert, bundle fetch, identity/fingerprint verification)
 model IdentityKey {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id         String   @db.Uuid
   device_id       String   @db.Uuid
   identity_key    String   // Base64-encoded public identity key
-  registration_id Int      // Signal protocol registration ID
+  registration_id Int      // Signal Protocol registration ID
   created_at      DateTime @default(now()) @db.Timestamp(6)
-  updated_at      DateTime @default(now()) @db.Timestamp(6)
-  
-  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  device          Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  updated_at      DateTime @default(now()) @updatedAt @db.Timestamp(6)
+
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, device_id])
   @@map("identity_keys")
   @@index([user_id], map: "idx_identity_keys_user")
 }
 
+/// Signed pre-key — medium-term rotating key (one per device, replaced on upload)
+/// Used in: keys (upload with delete+create, bundle fetch for session establishment)
 model SignedPreKey {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id         String   @db.Uuid
-  device_id       String   @db.Uuid
-  key_id          Int      // Signal protocol key ID
-  public_key      String   // Base64-encoded public key
-  signature       String   // Base64-encoded signature
-  created_at      DateTime @default(now()) @db.Timestamp(6)
-  
-  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  device          Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  device_id  String   @db.Uuid
+  key_id     Int      // Signal Protocol key ID
+  public_key String   // Base64-encoded public key
+  signature  String   // Base64-encoded signature
+  created_at DateTime @default(now()) @db.Timestamp(6)
+
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, device_id, key_id])
   @@map("signed_pre_keys")
   @@index([user_id, device_id], map: "idx_signed_pre_keys_user_device")
 }
 
+/// One-time pre-key — ephemeral keys consumed during session establishment
+/// Used in: keys (batch upload, replenish, atomic consumption in bundle fetch, count)
 model PreKey {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id         String   @db.Uuid
-  device_id       String   @db.Uuid
-  key_id          Int      // Signal protocol key ID
-  public_key      String   // Base64-encoded public key
-  used            Boolean  @default(false)
-  created_at      DateTime @default(now()) @db.Timestamp(6)
-  
-  user            User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  device          Device   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  device_id  String   @db.Uuid
+  key_id     Int      // Signal Protocol key ID
+  public_key String   // Base64-encoded public key
+  used       Boolean  @default(false) // Marked true when consumed
+  created_at DateTime @default(now()) @db.Timestamp(6)
+
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, device_id, key_id])
   @@map("pre_keys")

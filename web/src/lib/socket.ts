@@ -151,7 +151,7 @@ export function connectSocket(token: string): Socket {
 
   socket = io(WS_URL, {
     auth: { token },
-    transports: ['websocket', 'polling'],
+    transports: ['websocket'], // SECURITY: WebSocket only - polling sends tokens in HTTP headers
     reconnection: true,
     reconnectionAttempts: MAX_RECONNECTION_ATTEMPTS,
     reconnectionDelay: 1000,

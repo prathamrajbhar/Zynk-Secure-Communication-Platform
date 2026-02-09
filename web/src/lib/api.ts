@@ -7,8 +7,12 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
 
-// Calculate exponential backoff delay
-const getRetryDelay = (retryCount: number) => RETRY_DELAY_MS * Math.pow(2, retryCount);
+// Calculate exponential backoff delay with jitter
+const getRetryDelay = (retryCount: number) => {
+  const base = RETRY_DELAY_MS * Math.pow(2, retryCount);
+  // Add random jitter (0-25% of base) to prevent thundering herd
+  return base + Math.random() * base * 0.25;
+};
 
 // Track pending refresh promise to avoid multiple refresh calls
 let refreshPromise: Promise<string | null> | null = null;
@@ -18,7 +22,9 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30 second timeout
+  timeout: 15000, // 15 second timeout (reduced from 30s)
+  // SECURITY: Never send credentials to third-party URLs
+  withCredentials: false,
 });
 
 // Request interceptor to add auth token
@@ -27,6 +33,11 @@ api.interceptors.request.use(
     const token = localStorage.getItem('session_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    // SECURITY: Strip any potential auth tokens from URL params
+    // Tokens in URLs leak via logs, referrer headers, and browser history
+    if (config.params?.token) {
+      delete config.params.token;
     }
     return config;
   },

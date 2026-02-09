@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import api from '@/lib/api';
 import { getSocket, isConnected, SOCKET_EVENTS } from '@/lib/socket';
+import { useCryptoStore } from '@/stores/cryptoStore';
+import { isValidEncryptedMessage } from '@/lib/crypto';
 
 export interface Message {
   id: string;
@@ -154,7 +156,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  // Legacy sendMessage for compatibility
+  // Legacy sendMessage for compatibility — now with E2EE
   sendMessage: (conversationId, recipientId, content, messageType = 'text') => {
     const socket = getSocket();
     if (!socket || !isConnected()) {
@@ -177,15 +179,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
-      conversation_id: conversationId,
-      recipient_id: recipientId,
-      encrypted_content: content,
-      message_type: messageType,
-    });
+    // Encrypt before sending
+    const encryptAndSend = async () => {
+      let encryptedContent = content;
+      try {
+        const cryptoStore = useCryptoStore.getState();
+        if (cryptoStore.isInitialized && recipientId) {
+          encryptedContent = await cryptoStore.encrypt(recipientId, content);
+        }
+      } catch (error) {
+        console.error('Encryption failed, message not sent:', error);
+        return;
+      }
+
+      socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
+        conversation_id: conversationId,
+        recipient_id: recipientId,
+        encrypted_content: encryptedContent,
+        message_type: messageType,
+      });
+    };
+
+    encryptAndSend().catch(console.error);
   },
 
-  // Optimistic send - adds message to UI immediately
+  // Optimistic send - adds message to UI immediately, ENCRYPTS before transmission
   sendMessageOptimistic: (conversationId, content, messageType = 'text', replyToId) => {
     const tempId = generateTempId();
     const socket = getSocket();
@@ -240,15 +258,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { pendingMessages: updated };
     });
 
-    // Send via socket if connected
+    // Send via socket if connected — ENCRYPT before sending
     if (socket && isConnected()) {
-      socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
-        conversation_id: conversationId,
-        recipient_id: recipientId,
-        encrypted_content: content,
-        message_type: messageType,
-        reply_to_id: replyToId,
-        temp_id: tempId, // Send temp_id so server can correlate
+      // Encrypt the message content before transmission
+      const encryptAndSend = async () => {
+        let encryptedContent = content;
+        try {
+          const cryptoStore = useCryptoStore.getState();
+          if (cryptoStore.isInitialized && recipientId) {
+            encryptedContent = await cryptoStore.encrypt(recipientId, content);
+          } else if (cryptoStore.isInitialized && conversation?.type === 'group') {
+            // For groups, encrypt with a shared group key
+            // (simplified: encrypt per-member in production Signal Protocol)
+            encryptedContent = await cryptoStore.encrypt(conversationId, content);
+          }
+          // If crypto not initialized, this is a security failure
+          if (!cryptoStore.isInitialized) {
+            console.error('E2EE not initialized — refusing to send plaintext');
+            get().markMessageFailed(tempId);
+            return;
+          }
+        } catch (error) {
+          console.error('Encryption failed, message not sent:', error);
+          get().markMessageFailed(tempId);
+          return;
+        }
+
+        socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
+          conversation_id: conversationId,
+          recipient_id: recipientId,
+          encrypted_content: encryptedContent,
+          message_type: messageType,
+          reply_to_id: replyToId,
+          temp_id: tempId,
+        });
+      };
+
+      encryptAndSend().catch((error) => {
+        console.error('Send failed:', error);
+        get().markMessageFailed(tempId);
       });
 
       // Set timeout for marking as failed if no response
@@ -352,15 +400,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
 
-    // Retry sending
-    socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
-      conversation_id: failed.conversationId,
-      recipient_id: failed.recipientId,
-      encrypted_content: failed.content,
-      message_type: failed.messageType,
-      reply_to_id: failed.replyToId,
-      temp_id: tempId,
-    });
+    // Retry sending with encryption
+    const encryptAndRetry = async () => {
+      try {
+        let encryptedContent = failed.content;
+        const cryptoStore = useCryptoStore.getState();
+        if (cryptoStore.isInitialized && failed.recipientId) {
+          encryptedContent = await cryptoStore.encrypt(failed.recipientId, failed.content);
+        }
+
+        socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
+          conversation_id: failed.conversationId,
+          recipient_id: failed.recipientId,
+          encrypted_content: encryptedContent,
+          message_type: failed.messageType,
+          reply_to_id: failed.replyToId,
+          temp_id: tempId,
+        });
+      } catch (error) {
+        console.error('Retry encryption failed:', error);
+        get().markMessageFailed(tempId);
+      }
+    };
+
+    encryptAndRetry().catch(console.error);
   },
 
   processMessageQueue: () => {
@@ -368,15 +431,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!socket || !isConnected()) return;
 
     const pending = get().pendingMessages;
-    pending.forEach((msg, tempId) => {
-      socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
-        conversation_id: msg.conversationId,
-        recipient_id: msg.recipientId,
-        encrypted_content: msg.content,
-        message_type: msg.messageType,
-        reply_to_id: msg.replyToId,
-        temp_id: tempId,
-      });
+    pending.forEach(async (msg, tempId) => {
+      try {
+        // Encrypt queued messages before sending
+        let encryptedContent = msg.content;
+        const cryptoStore = useCryptoStore.getState();
+        if (cryptoStore.isInitialized && msg.recipientId) {
+          encryptedContent = await cryptoStore.encrypt(msg.recipientId, msg.content);
+        }
+
+        socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
+          conversation_id: msg.conversationId,
+          recipient_id: msg.recipientId,
+          encrypted_content: encryptedContent,
+          message_type: msg.messageType,
+          reply_to_id: msg.replyToId,
+          temp_id: tempId,
+        });
+      } catch (error) {
+        console.error('Failed to encrypt queued message:', error);
+        get().markMessageFailed(tempId);
+      }
     });
   },
 

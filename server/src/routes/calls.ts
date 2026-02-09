@@ -250,30 +250,40 @@ router.get('/history/list', authenticate, async (req: AuthRequest, res: Response
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
     const offset = parseInt(req.query.offset as string) || 0;
 
-    const calls = await prisma.call.findMany({
-      where: {
-        participants: {
-          some: { user_id: req.userId! }
+    // Use transaction for consistent count + fetch
+    const [total, calls] = await prisma.$transaction([
+      prisma.call.count({
+        where: {
+          participants: {
+            some: { user_id: req.userId! }
+          }
         }
-      },
-      include: {
-        participants: {
-          include: {
-            user: {
-              select: {
-                username: true,
-                profile: {
-                  select: { display_name: true }
+      }),
+      prisma.call.findMany({
+        where: {
+          participants: {
+            some: { user_id: req.userId! }
+          }
+        },
+        include: {
+          participants: {
+            include: {
+              user: {
+                select: {
+                  username: true,
+                  profile: {
+                    select: { display_name: true }
+                  }
                 }
               }
             }
           }
-        }
-      },
-      orderBy: { created_at: 'desc' },
-      take: limit,
-      skip: offset
-    });
+        },
+        orderBy: { created_at: 'desc' },
+        take: limit,
+        skip: offset
+      })
+    ]);
 
     const formattedCalls = calls.map(c => ({
       call_id: c.id,
@@ -289,7 +299,7 @@ router.get('/history/list', authenticate, async (req: AuthRequest, res: Response
       }))
     }));
 
-    return res.json({ calls: formattedCalls, total: formattedCalls.length, offset, limit });
+    return res.json({ calls: formattedCalls, total, offset, limit });
   } catch (error) {
     console.error('Fetch call history error:', error);
     return res.status(500).json({ error: 'Failed to fetch call history' });

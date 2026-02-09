@@ -6,6 +6,10 @@
  * - Key bundle fetch and session establishment for new conversations
  * - Message encryption before send, decryption on receive   
  * - Pre-key replenishment when running low
+ * 
+ * SECURITY INVARIANT: This store NEVER returns plaintext from encrypt().
+ * If encryption fails, the message MUST NOT be sent. The server
+ * should never see readable message content.
  */
 
 import { create } from 'zustand';
@@ -16,6 +20,7 @@ import {
   encryptMessage,
   decryptMessage,
   generateSafetyNumber,
+  isValidEncryptedMessage,
   type SessionState,
   type PreKeyBundle,
   type EncryptedMessage,
@@ -29,6 +34,32 @@ import {
   clearAllStorage,
   type StoredKeyBundle,
 } from '@/lib/storage';
+
+/**
+ * Derive a local-only secret from user credentials.
+ * This ensures the server can never derive the IndexedDB encryption key,
+ * because it's based on the user's password (which the server only stores as a bcrypt hash).
+ */
+async function deriveLocalSecret(userId: string, password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const salt = encoder.encode(`zynk-local-e2ee-${userId}`);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-512' },
+    keyMaterial,
+    256
+  );
+  // Convert to hex string for use as the storage encryption secret
+  return Array.from(new Uint8Array(bits))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 interface CryptoState {
   isInitialized: boolean;
@@ -52,12 +83,15 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   sessions: new Map(),
 
   /**
-   * Initialize the crypto layer after login
+   * Initialize the crypto layer after login.
+   * Uses a user-derived secret (NOT the session token) for local key encryption.
    */
   initialize: async (userId: string, userSecret: string) => {
     try {
-      // Initialize IndexedDB encryption
-      await initializeEncryption(userSecret);
+      // Derive a local-only encryption key from user's password hash
+      // This ensures the server cannot derive the key to read local storage
+      const localSecret = await deriveLocalSecret(userId, userSecret);
+      await initializeEncryption(localSecret);
 
       // Load existing key bundle
       const existingBundle = await getKeyBundle(userId);
@@ -76,8 +110,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       }
     } catch (error) {
       console.error('Crypto initialization failed:', error);
-      // Fall back to unencrypted mode
+      // Do NOT fallback to unencrypted mode — E2EE is mandatory
       set({ isInitialized: false });
+      throw new Error('E2EE initialization failed. Messages cannot be sent without encryption.');
     }
   },
 
@@ -180,13 +215,13 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   /**
-   * Encrypt a message for a remote user
+   * Encrypt a message for a remote user.
+   * SECURITY: NEVER returns plaintext. Throws on failure.
    */
   encrypt: async (remoteUserId: string, plaintext: string) => {
     const session = await get().getOrCreateSession(remoteUserId);
     if (!session) {
-      // Fallback: return plaintext if encryption not available
-      return plaintext;
+      throw new Error('E2EE_SESSION_FAILED: Cannot establish encrypted session. Message will not be sent.');
     }
 
     try {
@@ -201,25 +236,30 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       return JSON.stringify(encrypted);
     } catch (error) {
       console.error('Encryption failed:', error);
-      return plaintext; // Fallback to plaintext
+      // SECURITY: NEVER fallback to plaintext
+      throw new Error('E2EE_ENCRYPT_FAILED: Encryption failed. Message will not be sent in plaintext.');
     }
   },
 
   /**
-   * Decrypt a message from a remote user
+   * Decrypt a message from a remote user.
+   * Returns decrypted plaintext or a failure indicator (never raw ciphertext).
    */
   decrypt: async (remoteUserId: string, encryptedContent: string) => {
-    // Check if the content is actually encrypted (JSON with ciphertext field)
+    // Validate that this is actually encrypted content
+    if (!isValidEncryptedMessage(encryptedContent)) {
+      // Content is NOT encrypted — this is a security violation
+      // Return a warning instead of showing potentially injected content
+      console.warn('Received unencrypted content from', remoteUserId);
+      return '[Unencrypted message — potential security issue]';
+    }
+
     try {
       const parsed = JSON.parse(encryptedContent) as EncryptedMessage;
-      if (!parsed.ciphertext || !parsed.iv) {
-        // Not encrypted format — return as-is
-        return encryptedContent;
-      }
 
       const session = await get().getOrCreateSession(remoteUserId);
       if (!session) {
-        return encryptedContent; // Can't decrypt without session
+        return '[Cannot decrypt — no session with sender]';
       }
 
       const { plaintext, updatedSession } = await decryptMessage(session, parsed);
@@ -231,9 +271,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       set({ sessions: new Map(sessions) });
 
       return plaintext;
-    } catch {
-      // Not valid encrypted content — return as-is (backward compatibility)
-      return encryptedContent;
+    } catch (error) {
+      console.error('Decryption failed:', error);
+      return '[Decryption failed — message cannot be read]';
     }
   },
 

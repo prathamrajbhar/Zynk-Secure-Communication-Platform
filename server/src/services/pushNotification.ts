@@ -123,19 +123,28 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
 /**
  * Send a new message push notification
  */
+/**
+ * Send a new message push notification.
+ * 
+ * SECURITY: E2EE messages are encrypted — the server cannot read them.
+ * Push notifications MUST NOT include message content.
+ * Only send a generic "new message" notification.
+ */
 export async function pushNewMessage(
   recipientId: string,
   senderName: string,
-  messagePreview: string,
+  _messageContent: string, // Intentionally unused — content is encrypted
   conversationId: string,
   messageType: string = 'text'
 ): Promise<void> {
+  // SECURITY: Never include message content in push notifications.
+  // The content is E2E encrypted and the server cannot read it.
   const body =
     messageType === 'image' ? '📷 Photo'
     : messageType === 'file' ? '📎 File'
     : messageType === 'audio' ? '🎤 Voice message'
     : messageType === 'video' ? '🎬 Video'
-    : messagePreview.length > 100 ? messagePreview.substring(0, 97) + '...' : messagePreview;
+    : 'New message'; // Generic — never show actual text
 
   await sendPushToUser(recipientId, {
     title: senderName,

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Prisma } from '@prisma/client';
 import { ZodError } from 'zod';
 import multer from 'multer';
+import { config } from '../config';
 
 export class AppError extends Error {
   statusCode: number;
@@ -16,6 +17,9 @@ export class AppError extends Error {
 }
 
 export const errorHandler = (err: Error, req: Request, res: Response, next: NextFunction) => {
+  // SECURITY: Never expose stack traces or internal error details in production
+  const isDev = config.nodeEnv !== 'production';
+
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({
       error: err.message,
@@ -32,7 +36,7 @@ export const errorHandler = (err: Error, req: Request, res: Response, next: Next
       case 'P2003': // Foreign key constraint
         return res.status(400).json({ error: 'Related record not found' });
       default:
-        console.error('Prisma error:', err.code, err.message);
+        if (isDev) console.error('Prisma error:', err.code, err.message);
         return res.status(500).json({ error: 'Database error' });
     }
   }
@@ -50,7 +54,7 @@ export const errorHandler = (err: Error, req: Request, res: Response, next: Next
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({ error: 'File too large' });
     }
-    return res.status(400).json({ error: `Upload error: ${err.message}` });
+    return res.status(400).json({ error: 'Upload error' });
   }
 
   // JSON parse errors
@@ -58,9 +62,12 @@ export const errorHandler = (err: Error, req: Request, res: Response, next: Next
     return res.status(400).json({ error: 'Invalid JSON in request body' });
   }
 
-  console.error('Unhandled error:', err);
+  // SECURITY: Log full error server-side but only return generic message to client
+  console.error('Unhandled error:', isDev ? err : err.message);
   return res.status(500).json({
     error: 'Internal server error',
+    // Only include details in development
+    ...(isDev && { detail: err.message }),
   });
 };
 

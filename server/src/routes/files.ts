@@ -10,17 +10,43 @@ import sharp from 'sharp';
 
 const router = Router();
 
+// SECURITY: Allowed MIME types (prevents executable upload attacks)
+const ALLOWED_MIME_TYPES = new Set([
+  // Images
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+  // Documents
+  'application/pdf', 'text/plain', 'text/markdown',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  // Audio
+  'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/aac',
+  // Video
+  'video/mp4', 'video/webm', 'video/ogg',
+  // Archives
+  'application/zip', 'application/gzip',
+  // E2EE encrypted blobs
+  'application/octet-stream',
+]);
+
+// SECURITY: Dangerous file extensions that should never be allowed
+const BLOCKED_EXTENSIONS = new Set([
+  '.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.pif',
+  '.js', '.vbs', '.wsf', '.wsh', '.ps1', '.sh', '.bash',
+  '.php', '.asp', '.aspx', '.jsp', '.cgi',
+]);
+
 // Ensure upload directory exists
 const uploadDir = path.resolve(config.upload.dir);
 const thumbnailDir = path.join(uploadDir, 'thumbnails');
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(thumbnailDir, { recursive: true });
 
-// Multer storage config
+// Multer storage config with security hardening
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${path.extname(file.originalname)}`;
+    // SECURITY: Never use original filename - generate a random one
+    const uniqueName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${path.extname(file.originalname).toLowerCase()}`;
     cb(null, uniqueName);
   },
 });
@@ -28,6 +54,20 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: config.upload.maxFileSize },
+  fileFilter: (req, file, cb) => {
+    // SECURITY: Check MIME type
+    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      cb(new Error('File type not allowed'));
+      return;
+    }
+    // SECURITY: Check file extension
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (BLOCKED_EXTENSIONS.has(ext)) {
+      cb(new Error('File extension not allowed'));
+      return;
+    }
+    cb(null, true);
+  },
 });
 
 // POST /files/upload
@@ -109,7 +149,7 @@ router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Resp
   try {
     const file = await prisma.file.findUnique({
       where: { id: req.params.fileId, deleted_at: null },
-      select: { filename: true, storage_path: true, mime_type: true, conversation_id: true }
+      select: { filename: true, storage_path: true, mime_type: true, conversation_id: true, content_hash: true }
     });
 
     if (!file) {
@@ -132,8 +172,20 @@ router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Resp
       return res.status(404).json({ error: 'File not found on disk' });
     }
 
+    // Add ETag for caching (use content_hash if available)
+    if (file.content_hash) {
+      res.setHeader('ETag', `"${file.content_hash}"`);
+
+      // Check If-None-Match for 304 response
+      const ifNoneMatch = req.headers['if-none-match'];
+      if (ifNoneMatch === `"${file.content_hash}"`) {
+        return res.status(304).send();
+      }
+    }
+
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
     res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=86400'); // 24 hour cache
     return res.sendFile(filePath);
   } catch (error) {
     return res.status(500).json({ error: 'Download failed' });

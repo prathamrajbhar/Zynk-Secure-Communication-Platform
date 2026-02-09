@@ -103,7 +103,7 @@ export async function initializeEncryption(userSecret: string): Promise<void> {
     writeTransaction.objectStore(STORES.META).put({ key: 'encryption_salt', value: saltBase64 });
   }
 
-  // Derive encryption key via PBKDF2
+  // Derive encryption key via PBKDF2 with high iteration count
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(userSecret),
@@ -116,12 +116,12 @@ export async function initializeEncryption(userSecret: string): Promise<void> {
     {
       name: 'PBKDF2',
       salt: salt as BufferSource,
-      iterations: 100000,
+      iterations: 310000, // OWASP recommended minimum for SHA-256
       hash: 'SHA-256',
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
-    false,
+    false, // Non-extractable — key cannot be exported
     ['encrypt', 'decrypt']
   );
 }
@@ -352,7 +352,8 @@ export async function getSetting<T>(key: string, defaultValue: T): Promise<T> {
 // ========== Cleanup ==========
 
 /**
- * Clear all encrypted storage (called on logout)
+ * Clear all encrypted storage (called on logout).
+ * SECURITY: Zeroize the encryption key from memory.
  */
 export async function clearAllStorage(): Promise<void> {
   const database = await openDB();
@@ -369,6 +370,7 @@ export async function clearAllStorage(): Promise<void> {
     });
   }
 
+  // SECURITY: Zeroize the encryption key from memory
   encryptionKey = null;
 }
 
