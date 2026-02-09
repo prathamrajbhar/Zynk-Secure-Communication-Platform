@@ -9,6 +9,7 @@ export interface Message {
   conversation_id: string;
   sender_id: string;
   encrypted_content: string;
+  content?: string; // Decrypted content
   message_type: string;
   metadata?: Record<string, unknown>;
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
@@ -40,6 +41,7 @@ export interface Conversation {
   last_read_at?: string;
   unread_count: number;
   last_message?: string;
+  last_message_decrypted?: string;
   last_message_at?: string;
   last_message_sender_id?: string;
   other_user?: {
@@ -115,7 +117,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingConversations: true });
     try {
       const res = await api.get('/messages/conversations/list');
-      const convs = res.data.conversations || [];
+      let convs = res.data.conversations || [];
+
+      // Try to decrypt last messages
+      const cryptoStore = useCryptoStore.getState();
+      if (cryptoStore.isInitialized) {
+        convs = await Promise.all(convs.map(async (c: Conversation) => {
+          if (!c.last_message) return c;
+          // Skip already-plain messages
+          if (!isValidEncryptedMessage(c.last_message)) {
+            // Might be raw file JSON (non-encrypted file metadata)
+            try {
+              const parsed = JSON.parse(c.last_message);
+              if (parsed.filename) {
+                return { ...c, last_message_decrypted: parsed.mime_type?.startsWith('image/') ? '📷 Photo' : `📎 ${parsed.filename}` };
+              }
+            } catch { /* not JSON, leave as-is */ }
+            return c;
+          }
+          try {
+            const partnerId = c.type === 'one_to_one' ? c.other_user?.user_id : null;
+            if (!partnerId) return c;
+            const decrypted = await cryptoStore.decrypt(partnerId, c.last_message);
+            // Check if decrypted content is file metadata JSON
+            try {
+              const parsed = JSON.parse(decrypted);
+              if (parsed.filename) {
+                return { ...c, last_message_decrypted: parsed.mime_type?.startsWith('image/') ? '📷 Photo' : `📎 ${parsed.filename}` };
+              }
+            } catch { /* not file JSON */ }
+            return { ...c, last_message_decrypted: decrypted };
+          } catch {
+            return c;
+          }
+        }));
+      }
+
       set({ conversations: convs });
 
       // Update online users status from initial payload
@@ -137,9 +174,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingMessages: true });
     try {
       const res = await api.get(`/messages/${conversationId}?limit=50`);
-      set(state => ({
-        messages: { ...state.messages, [conversationId]: res.data.messages || [] },
-      }));
+      let messages = res.data.messages || [];
+
+      // Decrypt fetched messages
+      const cryptoStore = useCryptoStore.getState();
+      const conversation = get().conversations.find(c => c.id === conversationId);
+      const partnerId = conversation?.type === 'one_to_one' ? conversation.other_user?.user_id : null;
+
+      // Fallback: find the partner from message sender IDs
+      const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+      const resolvedPartnerId = partnerId
+        || (currentUserId ? messages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
+
+      if (cryptoStore.isInitialized && resolvedPartnerId) {
+        messages = await Promise.all(messages.map(async (m: Message) => {
+          // Skip messages that already have decrypted content
+          if (m.content && !isValidEncryptedMessage(m.content)) return m;
+          // Try to decrypt any message with encrypted_content (text, file, image)
+          if (!m.encrypted_content) return m;
+          try {
+            const decrypted = await cryptoStore.decrypt(resolvedPartnerId, m.encrypted_content);
+            return { ...m, content: decrypted };
+          } catch {
+            return m;
+          }
+        }));
+      }
+
+      // Merge: keep any optimistic (pending) messages that aren't in the API response yet
+      set(state => {
+        const existingOptimistic = (state.messages[conversationId] || [])
+          .filter(m => m.isOptimistic);
+        const serverIds = new Set(messages.map((m: Message) => m.id));
+        const unconfirmedOptimistic = existingOptimistic.filter(m => !serverIds.has(m.id));
+        return {
+          messages: { ...state.messages, [conversationId]: [...messages, ...unconfirmedOptimistic] },
+        };
+      });
     } catch (error) {
       console.error('Failed to fetch messages:', error);
     } finally {
@@ -219,7 +290,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       tempId,
       conversation_id: conversationId,
       sender_id: user.id || '',
-      encrypted_content: content,
+      encrypted_content: content, // Will be replaced with ciphertext later
+      content: content,           // Plaintext for immediate UI display
       message_type: messageType,
       status: 'pending',
       created_at: new Date().toISOString(),
@@ -265,21 +337,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let encryptedContent = content;
         try {
           const cryptoStore = useCryptoStore.getState();
+
+          if (!cryptoStore.isInitialized) {
+            // Try auto-init
+            const userStr = localStorage.getItem('user');
+            if (userStr) {
+              const user = JSON.parse(userStr);
+              await cryptoStore.initialize(user.id);
+            }
+          }
+
           if (cryptoStore.isInitialized && recipientId) {
             encryptedContent = await cryptoStore.encrypt(recipientId, content);
-          } else if (cryptoStore.isInitialized && conversation?.type === 'group') {
-            // For groups, encrypt with a shared group key
-            // (simplified: encrypt per-member in production Signal Protocol)
-            encryptedContent = await cryptoStore.encrypt(conversationId, content);
-          }
-          // If crypto not initialized, this is a security failure
-          if (!cryptoStore.isInitialized) {
-            console.error('E2EE not initialized — refusing to send plaintext');
+          } else if (!cryptoStore.isInitialized) {
+            console.error('[E2EE] Not initialized — refusing to send plaintext');
             get().markMessageFailed(tempId);
             return;
           }
         } catch (error) {
-          console.error('Encryption failed, message not sent:', error);
+          console.error('[E2EE] Encryption failed:', error);
           get().markMessageFailed(tempId);
           return;
         }
@@ -479,12 +555,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
 
       if (optimisticIndex !== -1) {
-        // Replace optimistic with real message
+        // Replace optimistic with real message, but preserve plaintext content
         const updatedMessagesList = [...existing];
         const oldMsg = updatedMessagesList[optimisticIndex];
+
+        // CRITICAL: Preserve the optimistic plaintext if the broadcast doesn't
+        // carry properly decrypted content (e.g. crypto wasn't initialized yet
+        // when the echo arrived, so message.content is undefined or raw JSON)
+        const keepOldContent = oldMsg.isOptimistic && oldMsg.content &&
+          (!message.content || isValidEncryptedMessage(message.content));
+
         updatedMessagesList[optimisticIndex] = {
           ...oldMsg,
           ...message,
+          content: keepOldContent ? oldMsg.content : (message.content ?? oldMsg.content),
           isOptimistic: false,
           tempId: tempId || oldMsg.tempId // Preserve tempId for future deduplication
         };
@@ -512,9 +596,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const updatedConversations = state.conversations.map(c => {
         if (c.id === convId) {
+          // For file/image messages, show friendly preview text in sidebar
+          let displayContent = message.content;
+          if (displayContent && ['file', 'image'].includes(message.message_type)) {
+            try {
+              const parsed = JSON.parse(displayContent);
+              if (parsed.filename) {
+                displayContent = parsed.mime_type?.startsWith('image/') ? '📷 Photo' : `📎 ${parsed.filename}`;
+              }
+            } catch { /* not file JSON, keep as-is */ }
+          }
           return {
             ...c,
             last_message: message.encrypted_content,
+            last_message_decrypted: displayContent,
             last_message_at: message.created_at,
             last_message_sender_id: message.sender_id,
             unread_count: state.activeConversation === convId ? c.unread_count : (c.unread_count || 0) + 1,

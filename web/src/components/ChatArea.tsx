@@ -12,6 +12,7 @@ import {
   ArrowLeft, Search, Loader2, Reply, Trash2, X,
   Download, RefreshCw, AlertCircle, Clock, Mic, Users,
 } from 'lucide-react';
+import { isValidEncryptedMessage } from '@/lib/crypto';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import GroupInfoPanel from './GroupInfoPanel';
@@ -26,7 +27,7 @@ const EMOJI_CATEGORIES: Record<string, string[]> = {
 };
 
 interface SearchResult { message_id: string; sender_display_name?: string; sender_username: string; snippet: string; created_at: string; }
-interface FileData { file_id: string; filename: string; file_size?: number; mime_type?: string; }
+interface FileData { file_id: string; filename: string; file_size?: number; mime_type?: string; thumbnail_path?: string; }
 
 const avatarColors = [
   'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
@@ -36,6 +37,76 @@ function getAvatarColor(name: string) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
   return avatarColors[Math.abs(h) % avatarColors.length];
+}
+
+// ── Authenticated image loading (server requires Bearer token) ──
+const blobUrlCache = new Map<string, string>();
+
+async function getAuthBlobUrl(endpoint: string): Promise<string> {
+  const cached = blobUrlCache.get(endpoint);
+  if (cached) return cached;
+  const res = await api.get(endpoint, { responseType: 'blob' });
+  const url = URL.createObjectURL(res.data);
+  blobUrlCache.set(endpoint, url);
+  return url;
+}
+
+function AuthImage({ fileId, className, onClick, useThumbnail = false }: {
+  fileId: string; className?: string; onClick?: () => void; useThumbnail?: boolean;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const endpoint = useThumbnail ? `/files/${fileId}/thumbnail` : `/files/${fileId}/download`;
+    getAuthBlobUrl(endpoint)
+      .then(url => { if (!cancelled) setSrc(url); })
+      .catch(() => { if (!cancelled) setError(true); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [fileId, useThumbnail]);
+
+  if (loading) {
+    return (
+      <div className={cn('animate-pulse bg-white/10 rounded-xl flex items-center justify-center min-h-[120px]', className)}>
+        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
+      </div>
+    );
+  }
+  if (error || !src) {
+    return (
+      <div className={cn('bg-white/10 rounded-xl flex flex-col items-center justify-center gap-1 min-h-[120px]', className)}>
+        <Image className="w-6 h-6 opacity-40" />
+        <span className="text-[10px] opacity-40">Failed to load</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      className={cn('rounded-xl cursor-pointer object-cover', className)}
+      onClick={onClick}
+      alt="Shared image"
+      loading="lazy"
+    />
+  );
+}
+
+function getFileTypeInfo(mimeType?: string, filename?: string) {
+  const ext = filename?.split('.').pop()?.toLowerCase() || '';
+  if (mimeType?.startsWith('audio/')) return { color: 'bg-purple-500', label: 'Audio', icon: '🎵' };
+  if (mimeType?.startsWith('video/')) return { color: 'bg-pink-500', label: 'Video', icon: '🎬' };
+  if (mimeType === 'application/pdf' || ext === 'pdf') return { color: 'bg-red-500', label: 'PDF', icon: '📄' };
+  if (['doc', 'docx'].includes(ext)) return { color: 'bg-blue-500', label: 'DOC', icon: '📝' };
+  if (['xls', 'xlsx'].includes(ext)) return { color: 'bg-green-600', label: 'XLS', icon: '📊' };
+  if (['ppt', 'pptx'].includes(ext)) return { color: 'bg-orange-500', label: 'PPT', icon: '📑' };
+  if (['zip', 'gz', 'rar', '7z', 'tar'].includes(ext)) return { color: 'bg-yellow-600', label: 'ZIP', icon: '📦' };
+  if (['mp3', 'wav', 'ogg', 'aac', 'flac'].includes(ext)) return { color: 'bg-purple-500', label: ext.toUpperCase(), icon: '🎵' };
+  if (['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext)) return { color: 'bg-pink-500', label: ext.toUpperCase(), icon: '🎬' };
+  if (['txt', 'md', 'csv', 'json', 'xml'].includes(ext)) return { color: 'bg-gray-500', label: ext.toUpperCase(), icon: '📃' };
+  return { color: 'bg-slate-500', label: ext.toUpperCase() || 'FILE', icon: '📎' };
 }
 
 export default function ChatArea() {
@@ -131,7 +202,7 @@ export default function ChatArea() {
         },
       });
       const messageType = file.type.startsWith('image/') ? 'image' : 'file';
-      const content = JSON.stringify({ file_id: res.data.file_id, filename: res.data.filename, file_size: res.data.file_size, mime_type: res.data.mime_type });
+      const content = JSON.stringify({ file_id: res.data.file_id, filename: res.data.filename, file_size: res.data.file_size, mime_type: res.data.mime_type, thumbnail_path: res.data.thumbnail_path || null });
       sendMessageOptimistic(activeConversation, content, messageType);
       toast.success('File uploaded');
     } catch { toast.error('Failed to upload file'); }
@@ -170,12 +241,14 @@ export default function ChatArea() {
 
   const handleEmojiSelect = (emoji: string) => { setInput(prev => prev + emoji); setShowEmojiPicker(false); };
 
-  const handleFilePreview = (fileData: FileData) => {
+  const handleFilePreview = async (fileData: FileData) => {
     if (fileData?.mime_type?.startsWith('image/')) {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
-      // SECURITY: Never put auth tokens in URLs - use Authorization header instead
-      const url = `${baseUrl}/files/${fileData.file_id}/download`;
-      setImagePreview({ url, name: fileData.filename });
+      try {
+        const url = await getAuthBlobUrl(`/files/${fileData.file_id}/download`);
+        setImagePreview({ url, name: fileData.filename });
+      } catch {
+        toast.error('Failed to load image');
+      }
     }
   };
 
@@ -333,7 +406,11 @@ export default function ChatArea() {
         <div className="mx-4 px-3 py-2 rounded-t-lg bg-[var(--bg-wash)] flex items-center gap-3 border-l-[3px] border-[var(--accent)] animate-fade-in">
           <div className="flex-1 min-w-0">
             <p className="text-xs font-semibold text-[var(--accent)]">{replyTo.sender_display_name || replyTo.sender_username || 'You'}</p>
-            <p className="text-xs text-[var(--text-muted)] truncate">{replyTo.encrypted_content}</p>
+            <p className="text-xs text-[var(--text-muted)] truncate">
+              {replyTo.content && !isValidEncryptedMessage(replyTo.content)
+                ? replyTo.content
+                : '🔒 Encrypted message'}
+            </p>
           </div>
           <button onClick={() => setReplyTo(null)} className="p-1 rounded hover:bg-[var(--hover)]">
             <X className="w-3.5 h-3.5 text-[var(--text-muted)]" />
@@ -430,7 +507,7 @@ export default function ChatArea() {
             className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors">
             <Reply className="w-4 h-4 text-[var(--text-muted)]" /> Reply
           </button>
-          <button onClick={() => { navigator.clipboard.writeText(contextMenu.message.encrypted_content); toast.success('Copied'); setContextMenu(null); }}
+          <button onClick={() => { navigator.clipboard.writeText(contextMenu.message.content || contextMenu.message.encrypted_content); toast.success('Copied'); setContextMenu(null); }}
             className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--hover)] transition-colors">
             <svg className="w-4 h-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
             Copy
@@ -451,12 +528,23 @@ export default function ChatArea() {
         </div>
       )}
 
-      {/* Image Preview */}
+      {/* Image Preview — fullscreen lightbox */}
       {imagePreview && (
         <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 animate-fade-in" onClick={() => setImagePreview(null)}>
-          <button onClick={() => setImagePreview(null)} className="absolute top-6 right-6 p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all active:scale-90">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="absolute top-6 right-6 flex items-center gap-2 z-10">
+            <a
+              href={imagePreview.url}
+              download={imagePreview.name}
+              onClick={(e) => e.stopPropagation()}
+              className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all active:scale-90"
+              title="Download"
+            >
+              <Download className="w-5 h-5" />
+            </a>
+            <button onClick={() => setImagePreview(null)} className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all active:scale-90">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
           <div className="max-w-4xl max-h-[85vh] animate-scale-in">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={imagePreview.url} alt={imagePreview.name || 'Image preview'} className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl" />
@@ -496,13 +584,26 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
 }) {
   const [showActions, setShowActions] = useState(false);
   const isFileMessage = message.message_type === 'file' || message.message_type === 'image';
+
+  // Parse file data from decrypted content first, fall back to encrypted_content
   let fileData: FileData | null = null;
-  if (isFileMessage) { try { fileData = JSON.parse(message.encrypted_content); } catch { } }
+  if (isFileMessage) {
+    // Try decrypted content first, then raw encrypted_content
+    const candidates = [message.content, message.encrypted_content].filter(Boolean);
+    for (const raw of candidates) {
+      try {
+        const parsed = JSON.parse(raw!);
+        if (parsed.file_id) { fileData = parsed; break; }
+      } catch { /* not valid JSON or not file data */ }
+    }
+  }
+
   const replyToId = message.metadata?.reply_to_id;
   const repliedMessage = replyToId ? allMessages.find(m => m.id === replyToId) : null;
   const formatSize = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
   const isPending = message.status === 'pending';
   const isFailed = message.status === 'failed';
+  const isImage = message.message_type === 'image' && fileData?.file_id;
 
   const renderStatus = () => {
     if (!isOwn) return null;
@@ -533,59 +634,145 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
           </div>
         )}
 
-        <div className={cn(
-          'px-3.5 py-2.5 rounded-2xl text-sm',
-          isOwn
-            ? 'rounded-br-sm bubble-own'
-            : 'rounded-bl-sm bubble-other',
-          isFailed && '!bg-red-600 text-white opacity-80',
-          isPending && 'opacity-60',
-        )}>
-          {!isOwn && showName && message.sender_username && (
-            <p className="text-xs font-semibold text-[var(--accent)] mb-0.5">{message.sender_display_name || message.sender_username}</p>
-          )}
+        {/* ── Image message: WhatsApp-style inline preview ── */}
+        {isImage && fileData ? (
+          <div className={cn(
+            'rounded-2xl overflow-hidden',
+            isOwn ? 'rounded-br-sm' : 'rounded-bl-sm',
+            isFailed && 'opacity-80',
+            isPending && 'opacity-60',
+          )}>
+            {!isOwn && showName && message.sender_username && (
+              <div className={cn('px-3 pt-2 pb-1', isOwn ? 'bubble-own' : 'bubble-other')}>
+                <p className="text-xs font-semibold text-[var(--accent)]">{message.sender_display_name || message.sender_username}</p>
+              </div>
+            )}
 
-          {repliedMessage && (
-            <div className={cn('mb-1.5 border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
-              <p className={cn('font-medium text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
-              <p className={cn('truncate text-[11px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{repliedMessage.encrypted_content}</p>
-            </div>
-          )}
-
-          {isFileMessage && fileData ? (
-            <div className={cn('rounded-lg p-2', isOwn ? 'bg-white/10' : 'bg-[var(--bg-app)]')}>
-              {message.message_type === 'image' ? (
-                <div className="cursor-pointer" onClick={() => onPreview(fileData!)}>
-                  <div className="flex items-center gap-2">
-                    {/* eslint-disable-next-line jsx-a11y/alt-text */}
-                    <Image className="w-4 h-4" />
-                    <span className="text-sm truncate">{fileData!.filename || 'Image'}</span>
-                  </div>
-                  <div className={cn('text-xs mt-0.5', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{fileData!.file_size && formatSize(fileData!.file_size)} · Tap to view</div>
+            {repliedMessage && (
+              <div className={cn('px-3 pt-2', isOwn ? 'bubble-own' : 'bubble-other')}>
+                <div className={cn('border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
+                  <p className={cn('font-medium text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
+                  <p className={cn('truncate text-[11px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>
+                    {repliedMessage.content && !isValidEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted message'}
+                  </p>
                 </div>
-              ) : (
-                <div>
-                  <div className="flex items-center gap-2">
-                    <FileIcon className="w-4 h-4 flex-shrink-0" />
-                    <span className="text-sm truncate">{fileData.filename || 'File'}</span>
-                  </div>
-                  <div className="flex items-center justify-between mt-0.5">
-                    <span className={cn('text-xs', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{fileData.file_size && formatSize(fileData.file_size)}</span>
-                    <button onClick={() => onDownload(fileData!)} className="p-1 rounded hover:bg-[var(--hover)]"><Download className="w-3.5 h-3.5" /></button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="leading-relaxed whitespace-pre-wrap break-words">{message.encrypted_content}</p>
-          )}
+              </div>
+            )}
 
-          <div className={cn('flex items-center gap-1 mt-0.5 justify-end')}>
-            {message.edited_at && <span className={cn('text-[10px] italic', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>edited</span>}
-            <span className={cn('text-[10px] leading-none', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{formatMessageTime(message.created_at)}</span>
-            {renderStatus()}
+            {/* Inline image */}
+            <div className="relative cursor-pointer" onClick={() => onPreview(fileData!)}>
+              <AuthImage
+                fileId={fileData.file_id}
+                useThumbnail
+                className="w-full max-w-[320px] min-h-[100px] max-h-[320px]"
+              />
+              {/* Time overlay on image */}
+              <div className="absolute bottom-0 right-0 left-0 bg-gradient-to-t from-black/60 to-transparent px-3 py-1.5 rounded-b-xl">
+                <div className="flex items-center gap-1 justify-end">
+                  <span className="text-[10px] leading-none text-white/80">{formatMessageTime(message.created_at)}</span>
+                  {renderStatus()}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
+        ) : isFileMessage && fileData ? (
+          /* ── File message: Modern card design ── */
+          <div className={cn(
+            'rounded-2xl text-sm overflow-hidden',
+            isOwn ? 'rounded-br-sm bubble-own' : 'rounded-bl-sm bubble-other',
+            isFailed && '!bg-red-600 text-white opacity-80',
+            isPending && 'opacity-60',
+          )}>
+            {!isOwn && showName && message.sender_username && (
+              <p className="text-xs font-semibold text-[var(--accent)] px-3.5 pt-2.5 mb-0.5">{message.sender_display_name || message.sender_username}</p>
+            )}
+
+            {repliedMessage && (
+              <div className={cn('mx-3.5 mt-2 mb-1 border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
+                <p className={cn('font-medium text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
+                <p className={cn('truncate text-[11px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>
+                  {repliedMessage.content && !isValidEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted message'}
+                </p>
+              </div>
+            )}
+
+            <div className="px-3 py-2.5">
+              {(() => {
+                const info = getFileTypeInfo(fileData.mime_type, fileData.filename);
+                return (
+                  <div className={cn(
+                    'flex items-center gap-3 p-2.5 rounded-xl',
+                    isOwn ? 'bg-white/10' : 'bg-[var(--bg-wash)]'
+                  )}>
+                    {/* File type icon */}
+                    <div className={cn('w-11 h-11 rounded-xl flex items-center justify-center text-white text-lg flex-shrink-0 shadow-sm', info.color)}>
+                      <span>{info.icon}</span>
+                    </div>
+                    {/* File info */}
+                    <div className="flex-1 min-w-0">
+                      <p className={cn('text-sm font-medium truncate', isOwn ? 'text-white' : 'text-[var(--text-primary)]')}>
+                        {fileData.filename || 'File'}
+                      </p>
+                      <p className={cn('text-xs mt-0.5', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>
+                        {info.label}{fileData.file_size ? ` · ${formatSize(fileData.file_size)}` : ''}
+                      </p>
+                    </div>
+                    {/* Download button */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDownload(fileData!); }}
+                      className={cn(
+                        'w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-all active:scale-90',
+                        isOwn ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-[var(--accent-subtle)] hover:bg-[var(--accent-muted)] text-[var(--accent)]'
+                      )}
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className={cn('flex items-center gap-1 px-3.5 pb-2 justify-end')}>
+              {message.edited_at && <span className={cn('text-[10px] italic', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>edited</span>}
+              <span className={cn('text-[10px] leading-none', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{formatMessageTime(message.created_at)}</span>
+              {renderStatus()}
+            </div>
+          </div>
+        ) : (
+          /* ── Text message ── */
+          <div className={cn(
+            'px-3.5 py-2.5 rounded-2xl text-sm',
+            isOwn ? 'rounded-br-sm bubble-own' : 'rounded-bl-sm bubble-other',
+            isFailed && '!bg-red-600 text-white opacity-80',
+            isPending && 'opacity-60',
+          )}>
+            {!isOwn && showName && message.sender_username && (
+              <p className="text-xs font-semibold text-[var(--accent)] mb-0.5">{message.sender_display_name || message.sender_username}</p>
+            )}
+
+            {repliedMessage && (
+              <div className={cn('mb-1.5 border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
+                <p className={cn('font-medium text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
+                <p className={cn('truncate text-[11px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>
+                  {repliedMessage.content && !isValidEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted message'}
+                </p>
+              </div>
+            )}
+
+            <p className="leading-relaxed whitespace-pre-wrap break-words">
+              {message.content && !isValidEncryptedMessage(message.content)
+                ? message.content
+                : <span className="italic opacity-70 flex items-center gap-1"><Lock className="w-3 h-3 inline" /> Encrypted message</span>
+              }
+            </p>
+
+            <div className={cn('flex items-center gap-1 mt-0.5 justify-end')}>
+              {message.edited_at && <span className={cn('text-[10px] italic', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>edited</span>}
+              <span className={cn('text-[10px] leading-none', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{formatMessageTime(message.created_at)}</span>
+              {renderStatus()}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

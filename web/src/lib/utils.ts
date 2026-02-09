@@ -41,15 +41,23 @@ export function truncate(text: string, length: number): string {
 export function formatLastMessage(content: string, length: number = 40): string {
   if (!content) return '';
 
-  // Check if it's a JSON string (likely a file/image message)
+  // Check if it's a JSON string (likely a file/image message, or an encrypted bundle)
   if (content.startsWith('{') && content.endsWith('}')) {
     try {
       const data = JSON.parse(content);
       if (data.filename) {
-        return `File: ${data.filename}`;
+        return data.mime_type?.startsWith('image/') ? `📷 Photo` : `📎 ${data.filename}`;
+      }
+      // v3 encrypted envelope
+      if (data.v === 3 && data.ct) {
+        return '🔒 Encrypted message';
+      }
+      // legacy encrypted message
+      if (data.ciphertext) {
+        return '🔒 Encrypted message';
       }
     } catch {
-      // Not valid JSON or missing filename, treat as plain text
+      // Not valid JSON or missing expected fields, treat as plain text
     }
   }
 

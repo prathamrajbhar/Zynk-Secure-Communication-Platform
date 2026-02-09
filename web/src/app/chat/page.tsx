@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, type Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
+import { useCryptoStore } from '@/stores/cryptoStore';
 import { connectSocket, disconnectSocket, SOCKET_EVENTS } from '@/lib/socket';
 import Sidebar from '@/components/Sidebar';
 import ChatArea from '@/components/ChatArea';
@@ -114,9 +115,29 @@ export default function ChatPage() {
     chatStore.fetchConversations();
 
     // Message events
-    socket.on(SOCKET_EVENTS.MESSAGE_RECEIVED, (message) => {
-      useChatStore.getState().addMessage(message);
+    socket.on(SOCKET_EVENTS.MESSAGE_RECEIVED, async (message) => {
+      let decryptedContent: string | undefined;
       const currentUser = useAuthStore.getState().user;
+
+      if (message.sender_id === currentUser?.id) {
+        // Own message echoed back — the optimistic message already has plaintext.
+        // addMessage() will preserve it. No need to decrypt.
+        decryptedContent = undefined;
+      } else {
+        // Incoming message from another user — decrypt
+        try {
+          const cs = useCryptoStore.getState();
+          if (cs.isInitialized && message.encrypted_content) {
+            decryptedContent = await cs.decrypt(message.sender_id, message.encrypted_content);
+          }
+        } catch (error) {
+          console.error('[E2EE] Decrypt failed:', error);
+        }
+      }
+
+      const decryptedMessage = { ...message, content: decryptedContent };
+      useChatStore.getState().addMessage(decryptedMessage);
+
       // Automatically mark as delivered if it's not our own message
       if (message.sender_id !== currentUser?.id) {
         socket.emit(SOCKET_EVENTS.MESSAGE_DELIVERED, {
@@ -132,7 +153,7 @@ export default function ChatPage() {
           const preview =
             message.message_type === 'image' ? '📷 Photo'
               : message.message_type === 'file' ? '📎 File'
-                : message.encrypted_content || 'New message';
+                : decryptedContent || 'New message';
           notifyIncomingMessage(senderName, preview, message.conversation_id, () => {
             setActiveConvFn(message.conversation_id);
           });
@@ -248,8 +269,19 @@ export default function ChatPage() {
     return () => {
       disconnectSocket();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
+
+  // Re-decrypt messages once crypto finishes initializing (may complete after socket connects)
+  const cryptoReady = useCryptoStore((state) => state.isInitialized);
+  useEffect(() => {
+    if (!cryptoReady || !isAuthenticated) return;
+    const { activeConversation, fetchMessages, fetchConversations } = useChatStore.getState();
+    fetchConversations();
+    if (activeConversation) {
+      fetchMessages(activeConversation);
+    }
+  }, [cryptoReady, isAuthenticated]);
 
   // Update document title and app badge with unread count
   useEffect(() => {

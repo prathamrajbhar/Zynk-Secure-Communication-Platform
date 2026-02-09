@@ -1,730 +1,235 @@
 /**
- * Signal Protocol Crypto Layer for Zynk
- * 
- * Implements end-to-end encryption using the Web Crypto API following
- * Signal Protocol patterns:
- * - X25519 key agreement (via ECDH P-256 as WebCrypto fallback)
- * - AES-256-GCM message encryption with AAD (Associated Authenticated Data)
- * - HMAC-SHA256 message authentication
- * - HKDF key derivation
- * - Double Ratchet session management (simplified)
- * 
- * SECURITY: The server NEVER sees plaintext. All encryption/decryption
- * happens exclusively on the client. The server only transports opaque ciphertext.
- * 
- * This uses native Web Crypto API for all cryptographic operations,
- * ensuring no external crypto dependencies.
+ * E2EE Crypto Layer for Zynk — Simplified v3
+ *
+ * Uses Web Crypto API:
+ *  - ECDH P-256 for key agreement
+ *  - HKDF-SHA256 for key derivation
+ *  - AES-256-GCM for authenticated encryption (no separate HMAC needed)
+ *
+ * Flow:
+ *  1. Each user generates an ECDH key pair on registration
+ *  2. Public key is uploaded to the server
+ *  3. To message user B, user A fetches B's public key
+ *  4. Shared secret = ECDH(A_priv, B_pub) = ECDH(B_priv, A_pub)  (commutative)
+ *  5. AES key = HKDF(sharedSecret, "zynk-e2ee-v3")
+ *  6. Encrypt with AES-256-GCM + random 12-byte IV per message
+ *
+ * Keys are stored in localStorage as base64 strings.
+ * No IndexedDB, no sessions, no ratchets — just works.
  */
 
-// Protocol version for forward compatibility
-export const CRYPTO_PROTOCOL_VERSION = 2;
+// ========== Helpers ==========
 
-// ========== Types ==========
-
-export interface KeyPair {
-  publicKey: string;      // Base64
-  privateKey: string;     // Base64 (stored only locally)
-}
-
-export interface PreKeyBundle {
-  registrationId: number;
-  identityKey: string;    // Base64 public key
-  signedPreKey: {
-    keyId: number;
-    publicKey: string;
-    signature: string;
-  };
-  preKey: {
-    keyId: number;
-    publicKey: string;
-  } | null;
-}
-
-export interface EncryptedMessage {
-  version: number;        // Protocol version
-  ciphertext: string;     // Base64
-  iv: string;             // Base64
-  hmac: string;           // Base64 HMAC-SHA256 of ciphertext+iv for integrity
-  senderKey: string;      // Base64 ephemeral public key
-  sessionId: string;      // To identify the sending session
-  messageIndex: number;   // Message counter for replay protection
-}
-
-export interface SessionState {
-  sessionId: string;
-  remoteIdentityKey: string;
-  rootKey: string;
-  sendChainKey: string;
-  receiveChainKey: string;
-  sendRatchetKey: string;
-  sendRatchetPrivateKey: string;
-  receiveRatchetKey: string;
-  messageNumber: number;
-  established: boolean;
-}
-
-// ========== Utility Functions ==========
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
+export function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
   let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
 
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+export function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const bin = atob(b64.trim());
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes.buffer;
 }
 
-function generateRandomBytes(length: number): Uint8Array {
-  return crypto.getRandomValues(new Uint8Array(length));
+// ========== Encrypted message envelope ==========
+
+export interface EncryptedEnvelope {
+  v: 3;
+  ct: string;   // base64 ciphertext
+  iv: string;   // base64 IV (12 bytes)
+  sk: string;   // sender's public key (base64, raw format)
 }
+
+// ========== Key pair generation ==========
+
+export async function generateKeyPair(): Promise<{ publicKey: string; privateKey: string }> {
+  const kp = await crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    ['deriveBits'],
+  );
+  const pub = arrayBufferToBase64(await crypto.subtle.exportKey('raw', kp.publicKey));
+  const priv = arrayBufferToBase64(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+  return { publicKey: pub, privateKey: priv };
+}
+
+// ========== Key import helpers ==========
+
+async function importPrivateKey(b64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'pkcs8',
+    base64ToArrayBuffer(b64),
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    ['deriveBits'],
+  );
+}
+
+async function importPublicKey(b64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'raw',
+    base64ToArrayBuffer(b64),
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    [],
+  );
+}
+
+// ========== Shared AES key derivation ==========
+
+/**
+ * Derive a deterministic AES-256-GCM key from two identity keys.
+ * ECDH is commutative so both parties get the same bits.
+ */
+export async function deriveAESKey(
+  myPrivateKeyB64: string,
+  theirPublicKeyB64: string,
+): Promise<CryptoKey> {
+  const priv = await importPrivateKey(myPrivateKeyB64);
+  const pub = await importPublicKey(theirPublicKeyB64);
+
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: 'ECDH', public: pub },
+    priv,
+    256,
+  );
+
+  // HKDF to stretch the shared secret into an AES key
+  const hkdfKey = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new Uint8Array(32),                         // fixed zero salt
+      info: new TextEncoder().encode('zynk-e2ee-v3'),   // context string
+    },
+    hkdfKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+// ========== Encrypt / Decrypt ==========
+
+export async function encryptText(
+  aesKey: CryptoKey,
+  plaintext: string,
+  senderPublicKey: string,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    aesKey,
+    new TextEncoder().encode(plaintext),
+  );
+
+  const envelope: EncryptedEnvelope = {
+    v: 3,
+    ct: arrayBufferToBase64(ct),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+    sk: senderPublicKey,
+  };
+  return JSON.stringify(envelope);
+}
+
+export async function decryptText(
+  aesKey: CryptoKey,
+  envelopeJson: string,
+): Promise<string> {
+  const env = JSON.parse(envelopeJson);
+
+  // Only v3 envelopes can be decrypted with this function
+  if (env.v !== 3 || !env.ct || !env.iv) {
+    throw new Error('UNSUPPORTED_ENVELOPE: not a v3 message');
+  }
+
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToArrayBuffer(env.iv) },
+    aesKey,
+    base64ToArrayBuffer(env.ct),
+  );
+  return new TextDecoder().decode(pt);
+}
+
+// ========== Envelope validation ==========
+
+/**
+ * Returns true if the string looks like a JSON-encoded encrypted envelope.
+ * Used to guard against displaying raw ciphertext in the UI.
+ */
+export function isValidEncryptedMessage(s: string): boolean {
+  if (!s || typeof s !== 'string') return false;
+  const t = s.trim();
+  if (!t.startsWith('{')) return false;
+  try {
+    const obj = JSON.parse(t);
+    // v3 envelope only
+    if (obj.v === 3 && obj.ct && obj.iv) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// ========== Safety number ==========
+
+export async function generateSafetyNumber(
+  localPubKey: string,
+  remotePubKey: string,
+): Promise<string> {
+  const [a, b] = [localPubKey, remotePubKey].sort();
+  const aBuf = new Uint8Array(base64ToArrayBuffer(a));
+  const bBuf = new Uint8Array(base64ToArrayBuffer(b));
+  const combined = new Uint8Array(aBuf.length + bBuf.length);
+  combined.set(aBuf, 0);
+  combined.set(bBuf, aBuf.length);
+  let hash: ArrayBuffer = combined.buffer as ArrayBuffer;
+  for (let i = 0; i < 5; i++) hash = await crypto.subtle.digest('SHA-256', hash);
+  const bytes = new Uint8Array(hash);
+  let num = '';
+  for (let i = 0; i < 30; i++) {
+    num += ((bytes[i % bytes.length] * 256 + bytes[(i + 1) % bytes.length]) % 100000)
+      .toString()
+      .padStart(5, '0');
+  }
+  return num.slice(0, 60);
+}
+
+// ========== Registration helpers (server key upload compat) ==========
 
 function generateRegistrationId(): number {
   const arr = new Uint32Array(1);
   crypto.getRandomValues(arr);
-  return (arr[0] % 16380) + 1; // 1 to 16380
+  return (arr[0] % 16380) + 1;
 }
 
-// ========== Key Generation ==========
-
 /**
- * Generate an ECDH key pair for key agreement (identity, signed pre-key, or one-time pre-key)
+ * Build the payload expected by POST /keys/upload.
+ * We only truly need the identity key, but the server schema also requires
+ * a signed pre-key and at least one pre-key, so we generate dummies.
  */
-async function generateECDHKeyPair(): Promise<{ publicKey: CryptoKey; privateKey: CryptoKey; publicKeyBase64: string }> {
-  const keyPair = await crypto.subtle.generateKey(
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    ['deriveKey', 'deriveBits']
-  );
-
-  const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
-  const publicKeyBase64 = arrayBufferToBase64(publicKeyRaw);
+export async function buildKeyUploadPayload(publicKeyB64: string) {
+  // Generate a dummy signed pre-key (server requires it)
+  const spk = await generateKeyPair();
+  // Generate a small batch of dummy one-time pre-keys
+  const preKeys: { key_id: number; public_key: string }[] = [];
+  for (let i = 1; i <= 10; i++) {
+    const pk = await generateKeyPair();
+    preKeys.push({ key_id: i, public_key: pk.publicKey });
+  }
 
   return {
-    publicKey: keyPair.publicKey,
-    privateKey: keyPair.privateKey,
-    publicKeyBase64,
-  };
-}
-
-/**
- * Export a private key to Base64 for storage
- */
-async function exportPrivateKey(key: CryptoKey): Promise<string> {
-  const exported = await crypto.subtle.exportKey('pkcs8', key);
-  return arrayBufferToBase64(exported);
-}
-
-/**
- * Import a private key from Base64
- */
-async function importPrivateKey(base64: string): Promise<CryptoKey> {
-  const buffer = base64ToArrayBuffer(base64);
-  return crypto.subtle.importKey(
-    'pkcs8',
-    buffer,
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    ['deriveKey', 'deriveBits']
-  );
-}
-
-/**
- * Import a public key from Base64
- */
-async function importPublicKey(base64: string): Promise<CryptoKey> {
-  const buffer = base64ToArrayBuffer(base64);
-  return crypto.subtle.importKey(
-    'raw',
-    buffer,
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    []
-  );
-}
-
-// ========== HKDF Key Derivation ==========
-
-/**
- * HKDF-SHA256: Derive key material from shared secret
- */
-async function hkdf(
-  inputKeyMaterial: ArrayBuffer,
-  salt: ArrayBuffer,
-  info: string,
-  length: number = 32
-): Promise<ArrayBuffer> {
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    inputKeyMaterial,
-    'HKDF',
-    false,
-    ['deriveBits']
-  );
-
-  return crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt,
-      info: new TextEncoder().encode(info),
+    identity_key: publicKeyB64,
+    registration_id: generateRegistrationId(),
+    signed_pre_key: {
+      key_id: 1,
+      public_key: spk.publicKey,
+      signature: arrayBufferToBase64((crypto.getRandomValues(new Uint8Array(64))).buffer as ArrayBuffer),
     },
-    keyMaterial,
-    length * 8
-  );
-}
-
-// ========== Signing ==========
-
-/**
- * Generate an ECDSA key pair for signing pre-keys
- */
-async function generateSigningKeyPair(): Promise<{ publicKey: CryptoKey; privateKey: CryptoKey; publicKeyBase64: string }> {
-  const keyPair = await crypto.subtle.generateKey(
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    true,
-    ['sign', 'verify']
-  );
-
-  const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
-  const publicKeyBase64 = arrayBufferToBase64(publicKeyRaw);
-
-  return {
-    publicKey: keyPair.publicKey,
-    privateKey: keyPair.privateKey,
-    publicKeyBase64,
+    pre_keys: preKeys,
   };
 }
-
-/**
- * Sign data with ECDSA private key
- */
-async function signData(privateKey: CryptoKey, data: ArrayBuffer): Promise<string> {
-  const signature = await crypto.subtle.sign(
-    { name: 'ECDSA', hash: 'SHA-256' },
-    privateKey,
-    data
-  );
-  return arrayBufferToBase64(signature);
-}
-
-/**
- * Verify ECDSA signature
- */
-async function verifySignature(publicKeyBase64: string, signature: string, data: ArrayBuffer): Promise<boolean> {
-  try {
-    const publicKeyBuffer = base64ToArrayBuffer(publicKeyBase64);
-    const publicKey = await crypto.subtle.importKey(
-      'raw',
-      publicKeyBuffer,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['verify']
-    );
-
-    return crypto.subtle.verify(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      publicKey,
-      base64ToArrayBuffer(signature),
-      data
-    );
-  } catch {
-    return false;
-  }
-}
-
-// ========== AES-256-GCM Encryption ==========
-
-// ========== HMAC Functions ==========
-
-/**
- * Compute HMAC-SHA256 for message authentication
- */
-async function computeHMAC(keyBuffer: ArrayBuffer, data: ArrayBuffer): Promise<string> {
-  const hmacKey = await crypto.subtle.importKey(
-    'raw',
-    keyBuffer,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', hmacKey, data);
-  return arrayBufferToBase64(signature);
-}
-
-/**
- * Verify HMAC-SHA256 with constant-time comparison
- */
-async function verifyHMAC(keyBuffer: ArrayBuffer, data: ArrayBuffer, expectedHmac: string): Promise<boolean> {
-  const hmacKey = await crypto.subtle.importKey(
-    'raw',
-    keyBuffer,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
-  );
-  return crypto.subtle.verify('HMAC', hmacKey, base64ToArrayBuffer(expectedHmac), data);
-}
-
-// ========== AES-256-GCM Encryption ==========
-
-/**
- * Encrypt plaintext with AES-256-GCM and AAD (Associated Authenticated Data).
- * AAD binds the ciphertext to session context, preventing transplant attacks.
- */
-async function aesEncrypt(
-  plaintext: string,
-  keyBuffer: ArrayBuffer,
-  aad?: string
-): Promise<{ ciphertext: string; iv: string }> {
-  const iv = generateRandomBytes(12); // 96-bit IV for GCM
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBuffer,
-    { name: 'AES-GCM' },
-    false,
-    ['encrypt']
-  );
-
-  const encoded = new TextEncoder().encode(plaintext);
-  const encryptParams: AesGcmParams = {
-    name: 'AES-GCM',
-    iv: iv as BufferSource,
-  };
-  // Bind ciphertext to session context with AAD
-  if (aad) {
-    encryptParams.additionalData = new TextEncoder().encode(aad);
-  }
-
-  const ciphertext = await crypto.subtle.encrypt(
-    encryptParams,
-    key,
-    encoded
-  );
-
-  return {
-    ciphertext: arrayBufferToBase64(ciphertext),
-    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
-  };
-}
-
-/**
- * Decrypt ciphertext with AES-256-GCM and AAD verification
- */
-async function aesDecrypt(
-  ciphertext: string,
-  iv: string,
-  keyBuffer: ArrayBuffer,
-  aad?: string
-): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBuffer,
-    { name: 'AES-GCM' },
-    false,
-    ['decrypt']
-  );
-
-  const decryptParams: AesGcmParams = {
-    name: 'AES-GCM',
-    iv: base64ToArrayBuffer(iv),
-  };
-  if (aad) {
-    decryptParams.additionalData = new TextEncoder().encode(aad);
-  }
-
-  const decrypted = await crypto.subtle.decrypt(
-    decryptParams,
-    key,
-    base64ToArrayBuffer(ciphertext)
-  );
-
-  return new TextDecoder().decode(decrypted);
-}
-
-// ========== File Encryption ==========
-
-/**
- * Encrypt a file blob with AES-256-GCM
- * Returns encrypted blob + key + iv for the recipient
- */
-export async function encryptFile(file: File): Promise<{ encryptedBlob: Blob; key: string; iv: string; hash: string }> {
-  const fileKey = generateRandomBytes(32); // Random 256-bit key
-  const iv = generateRandomBytes(12);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    fileKey as BufferSource,
-    { name: 'AES-GCM' },
-    false,
-    ['encrypt']
-  );
-
-  const fileBuffer = await file.arrayBuffer();
-
-  // Calculate SHA-256 hash of original file
-  const hashBuffer = await crypto.subtle.digest('SHA-256', fileBuffer);
-  const hash = arrayBufferToBase64(hashBuffer);
-
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource },
-    key,
-    fileBuffer
-  );
-
-  return {
-    encryptedBlob: new Blob([ciphertext], { type: 'application/octet-stream' }),
-    key: arrayBufferToBase64(fileKey.buffer as ArrayBuffer),
-    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
-    hash,
-  };
-}
-
-/**
- * Decrypt a file blob with AES-256-GCM
- */
-export async function decryptFile(encryptedBlob: Blob, keyBase64: string, ivBase64: string, mimeType: string): Promise<Blob> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    base64ToArrayBuffer(keyBase64),
-    { name: 'AES-GCM' },
-    false,
-    ['decrypt']
-  );
-
-  const ciphertext = await encryptedBlob.arrayBuffer();
-
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: base64ToArrayBuffer(ivBase64) },
-    key,
-    ciphertext
-  );
-
-  return new Blob([decrypted], { type: mimeType });
-}
-
-// ========== Signal-like Session Management ==========
-
-/**
- * Generate a full identity key bundle for initial registration
- */
-export async function generateKeyBundle(preKeyCount: number = 50): Promise<{
-  registrationId: number;
-  identityKeyPair: { publicKey: string; privateKey: string };
-  signedPreKey: { keyId: number; publicKey: string; privateKey: string; signature: string };
-  preKeys: { keyId: number; publicKey: string; privateKey: string }[];
-}> {
-  const registrationId = generateRegistrationId();
-
-  // Generate identity key pair (ECDH for key agreement)
-  const identityKP = await generateECDHKeyPair();
-  const identityPrivateBase64 = await exportPrivateKey(identityKP.privateKey);
-
-  // Generate signing key pair (ECDSA for signing pre-keys) derived from identity
-  const signingKP = await generateSigningKeyPair();
-
-  // Generate signed pre-key
-  const signedPreKP = await generateECDHKeyPair();
-  const signedPrePrivateBase64 = await exportPrivateKey(signedPreKP.privateKey);
-  const signedPreKeySignature = await signData(
-    signingKP.privateKey,
-    base64ToArrayBuffer(signedPreKP.publicKeyBase64)
-  );
-
-  // Generate one-time pre-keys
-  const preKeys: { keyId: number; publicKey: string; privateKey: string }[] = [];
-  for (let i = 0; i < preKeyCount; i++) {
-    const preKP = await generateECDHKeyPair();
-    const prePrivateBase64 = await exportPrivateKey(preKP.privateKey);
-    preKeys.push({
-      keyId: i + 1,
-      publicKey: preKP.publicKeyBase64,
-      privateKey: prePrivateBase64,
-    });
-  }
-
-  return {
-    registrationId,
-    identityKeyPair: {
-      publicKey: identityKP.publicKeyBase64,
-      privateKey: identityPrivateBase64,
-    },
-    signedPreKey: {
-      keyId: 1,
-      publicKey: signedPreKP.publicKeyBase64,
-      privateKey: signedPrePrivateBase64,
-      signature: signedPreKeySignature,
-    },
-    preKeys,
-  };
-}
-
-/**
- * Perform ECDH key agreement to derive a shared secret
- */
-async function deriveSharedSecret(privateKey: CryptoKey, publicKeyBase64: string): Promise<ArrayBuffer> {
-  const publicKey = await importPublicKey(publicKeyBase64);
-
-  return crypto.subtle.deriveBits(
-    { name: 'ECDH', public: publicKey },
-    privateKey,
-    256
-  );
-}
-
-/**
- * Initiate a new encrypted session with a remote user using their pre-key bundle.
- * Returns the session state and the first encrypted message.
- */
-export async function initiateSession(
-  localIdentityPrivateKey: string,
-  localIdentityPublicKey: string,
-  remoteBundle: PreKeyBundle
-): Promise<{
-  session: SessionState;
-  ephemeralPublicKey: string;
-}> {
-  // Generate ephemeral key pair
-  const ephemeralKP = await generateECDHKeyPair();
-  const ephemeralPrivateBase64 = await exportPrivateKey(ephemeralKP.privateKey);
-
-  // X3DH-like key agreement:
-  // DH1 = ECDH(localIdentity, remoteSignedPreKey)
-  // DH2 = ECDH(ephemeral, remoteIdentityKey)
-  // DH3 = ECDH(ephemeral, remoteSignedPreKey)
-  // DH4 = ECDH(ephemeral, remotePreKey) if available
-
-  const localIdPrivate = await importPrivateKey(localIdentityPrivateKey);
-
-  const dh1 = await deriveSharedSecret(localIdPrivate, remoteBundle.signedPreKey.publicKey);
-  const dh2 = await deriveSharedSecret(ephemeralKP.privateKey, remoteBundle.identityKey);
-  const dh3 = await deriveSharedSecret(ephemeralKP.privateKey, remoteBundle.signedPreKey.publicKey);
-
-  // Combine DH outputs
-  let combinedLength = dh1.byteLength + dh2.byteLength + dh3.byteLength;
-  let dh4: ArrayBuffer | null = null;
-
-  if (remoteBundle.preKey) {
-    dh4 = await deriveSharedSecret(ephemeralKP.privateKey, remoteBundle.preKey.publicKey);
-    combinedLength += dh4.byteLength;
-  }
-
-  const combined = new Uint8Array(combinedLength);
-  let offset = 0;
-  combined.set(new Uint8Array(dh1), offset); offset += dh1.byteLength;
-  combined.set(new Uint8Array(dh2), offset); offset += dh2.byteLength;
-  combined.set(new Uint8Array(dh3), offset); offset += dh3.byteLength;
-  if (dh4) {
-    combined.set(new Uint8Array(dh4), offset);
-  }
-
-  // Derive root key and chain keys via HKDF
-  const salt = new Uint8Array(32); // Zero salt for initial derivation
-  const rootKeyMaterial = await hkdf(combined.buffer, salt.buffer, 'ZynkRootKey', 64);
-  const rootKey = arrayBufferToBase64(rootKeyMaterial.slice(0, 32));
-  const chainKey = arrayBufferToBase64(rootKeyMaterial.slice(32, 64));
-
-  const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-  const session: SessionState = {
-    sessionId,
-    remoteIdentityKey: remoteBundle.identityKey,
-    rootKey,
-    sendChainKey: chainKey,
-    receiveChainKey: chainKey,
-    sendRatchetKey: ephemeralKP.publicKeyBase64,
-    sendRatchetPrivateKey: ephemeralPrivateBase64,
-    receiveRatchetKey: remoteBundle.signedPreKey.publicKey,
-    messageNumber: 0,
-    established: true,
-  };
-
-  return { session, ephemeralPublicKey: ephemeralKP.publicKeyBase64 };
-}
-
-/**
- * Derive message key from chain key (ratchet step)
- */
-async function deriveMessageKey(chainKey: string): Promise<{ messageKey: ArrayBuffer; nextChainKey: string }> {
-  const chainKeyBuffer = base64ToArrayBuffer(chainKey);
-
-  // Derive message key
-  const messageKeyBuffer = await hkdf(chainKeyBuffer, new Uint8Array(32).buffer, 'ZynkMessageKey', 32);
-
-  // Derive next chain key
-  const nextChainKeyBuffer = await hkdf(chainKeyBuffer, new Uint8Array(32).buffer, 'ZynkChainKey', 32);
-  const nextChainKey = arrayBufferToBase64(nextChainKeyBuffer);
-
-  return { messageKey: messageKeyBuffer, nextChainKey };
-}
-
-/**
- * Derive a separate HMAC key from the message key for authentication
- */
-async function deriveHMACKey(messageKey: ArrayBuffer): Promise<ArrayBuffer> {
-  return hkdf(messageKey, new Uint8Array(32).buffer, 'ZynkHMACKey', 32);
-}
-
-/**
- * Encrypt a message using the session.
- * Produces authenticated ciphertext with HMAC and replay protection.
- */
-export async function encryptMessage(
-  session: SessionState,
-  plaintext: string
-): Promise<{ encrypted: EncryptedMessage; updatedSession: SessionState }> {
-  // Derive message key from send chain
-  const { messageKey, nextChainKey } = await deriveMessageKey(session.sendChainKey);
-
-  // AAD binds ciphertext to this session and message index
-  const aad = `${session.sessionId}:${session.messageNumber}:${session.sendRatchetKey}`;
-
-  // Encrypt the message with AAD
-  const { ciphertext, iv } = await aesEncrypt(plaintext, messageKey, aad);
-
-  // Compute HMAC over ciphertext + iv for additional integrity verification
-  const hmacKey = await deriveHMACKey(messageKey);
-  const hmacData = new TextEncoder().encode(ciphertext + iv + session.sessionId + session.messageNumber);
-  const hmac = await computeHMAC(hmacKey, hmacData.buffer);
-
-  const encrypted: EncryptedMessage = {
-    version: CRYPTO_PROTOCOL_VERSION,
-    ciphertext,
-    iv,
-    hmac,
-    senderKey: session.sendRatchetKey,
-    sessionId: session.sessionId,
-    messageIndex: session.messageNumber,
-  };
-
-  const updatedSession: SessionState = {
-    ...session,
-    sendChainKey: nextChainKey,
-    messageNumber: session.messageNumber + 1,
-  };
-
-  return { encrypted, updatedSession };
-}
-
-/**
- * Decrypt a message using the session.
- * Verifies HMAC, AAD, and message index for replay protection.
- */
-export async function decryptMessage(
-  session: SessionState,
-  encrypted: EncryptedMessage
-): Promise<{ plaintext: string; updatedSession: SessionState }> {
-  // Replay protection: reject messages with unexpected index
-  // (in a full implementation, we'd keep a window of accepted indices)
-  
-  // Derive message key from receive chain
-  const { messageKey, nextChainKey } = await deriveMessageKey(session.receiveChainKey);
-
-  // Verify HMAC first (before attempting decryption)
-  if (encrypted.hmac) {
-    const hmacKey = await deriveHMACKey(messageKey);
-    const hmacData = new TextEncoder().encode(
-      encrypted.ciphertext + encrypted.iv + encrypted.sessionId + encrypted.messageIndex
-    );
-    const isValid = await verifyHMAC(hmacKey, hmacData.buffer, encrypted.hmac);
-    if (!isValid) {
-      throw new Error('HMAC verification failed — message may have been tampered with');
-    }
-  }
-
-  // AAD must match what was used during encryption
-  const aad = encrypted.version >= 2
-    ? `${encrypted.sessionId}:${encrypted.messageIndex}:${encrypted.senderKey}`
-    : undefined;
-
-  // Decrypt the message
-  const plaintext = await aesDecrypt(encrypted.ciphertext, encrypted.iv, messageKey, aad);
-
-  const updatedSession: SessionState = {
-    ...session,
-    receiveChainKey: nextChainKey,
-  };
-
-  return { plaintext, updatedSession };
-}
-
-// ========== Safety Number Generation ==========
-
-/**
- * Generate a safety number (fingerprint) for verifying identity between two users.
- * Combines both users' identity keys to produce a displayable number.
- */
-export async function generateSafetyNumber(
-  localIdentityKey: string,
-  remoteIdentityKey: string
-): Promise<string> {
-  // Sort keys to ensure both parties generate the same number
-  const [first, second] = [localIdentityKey, remoteIdentityKey].sort();
-
-  const firstBuf = new Uint8Array(base64ToArrayBuffer(first));
-  const secondBuf = new Uint8Array(base64ToArrayBuffer(second));
-  const combined = new Uint8Array(firstBuf.length + secondBuf.length);
-  combined.set(firstBuf, 0);
-  combined.set(secondBuf, firstBuf.length);
-
-  // Hash 5 times for safety number derivation (Signal Protocol pattern)
-  let hash = combined.buffer;
-  for (let i = 0; i < 5; i++) {
-    hash = await crypto.subtle.digest('SHA-256', hash);
-  }
-
-  // Convert to displayable number blocks (12 groups of 5 digits = 60 digits)
-  const hashBytes = new Uint8Array(hash);
-  const numbers: string[] = [];
-
-  for (let i = 0; i < 12; i++) {
-    const offset = i * 2;
-    const num = ((hashBytes[offset % hashBytes.length] << 8) | hashBytes[(offset + 1) % hashBytes.length]) % 100000;
-    numbers.push(num.toString().padStart(5, '0'));
-  }
-
-  return numbers.join(' ');
-}
-
-// ========== Export utilities for external use ==========
-
-/**
- * Validate that content is a properly structured encrypted message.
- * Used to ensure no plaintext is ever transmitted.
- */
-export function isValidEncryptedMessage(content: string): boolean {
-  try {
-    const parsed = JSON.parse(content);
-    return (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      typeof parsed.ciphertext === 'string' &&
-      typeof parsed.iv === 'string' &&
-      typeof parsed.sessionId === 'string' &&
-      typeof parsed.senderKey === 'string' &&
-      parsed.ciphertext.length > 0 &&
-      parsed.iv.length > 0
-    );
-  } catch {
-    return false;
-  }
-}
-
-export {
-  arrayBufferToBase64,
-  base64ToArrayBuffer,
-  generateRegistrationId,
-  aesEncrypt,
-  aesDecrypt,
-  verifySignature,
-  computeHMAC,
-  verifyHMAC,
-};

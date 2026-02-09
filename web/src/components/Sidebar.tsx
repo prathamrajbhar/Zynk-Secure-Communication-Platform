@@ -322,7 +322,7 @@ function ConversationItem({ conversation, isActive, isOnline, onClick }: {
   const name = conversation.type === 'one_to_one'
     ? (conversation.other_user?.display_name || conversation.other_user?.username || 'Unknown')
     : (conversation.group_info?.name || 'Group');
-  const lastMessage = formatLastMessage(conversation.last_message || '', 36) || 'No messages yet';
+  const lastMessage = formatLastMessage(conversation.last_message_decrypted || conversation.last_message || '', 36) || 'No messages yet';
   const time = conversation.last_message_at ? formatTime(conversation.last_message_at) : '';
   const hasUnread = conversation.unread_count > 0;
   const color = conversation.type === 'group' ? 'bg-violet-500' : getAvatarColor(name);

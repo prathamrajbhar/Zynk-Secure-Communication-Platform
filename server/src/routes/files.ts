@@ -144,6 +144,45 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
   }
 });
 
+// GET /files/:fileId/thumbnail — serve thumbnail by file ID (for inline chat previews)
+router.get('/:fileId/thumbnail', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const file = await prisma.file.findUnique({
+      where: { id: req.params.fileId, deleted_at: null },
+      select: { thumbnail_path: true, storage_path: true, mime_type: true, conversation_id: true }
+    });
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Verify access
+    if (file.conversation_id) {
+      const participant = await prisma.conversationParticipant.findFirst({
+        where: { conversation_id: file.conversation_id, user_id: req.userId! }
+      });
+      if (!participant) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
+    const thumbFile = file.thumbnail_path
+      ? path.join(thumbnailDir, file.thumbnail_path)
+      : path.join(uploadDir, file.storage_path);
+
+    if (!fs.existsSync(thumbFile)) {
+      return res.status(404).json({ error: 'Thumbnail not found' });
+    }
+
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    // Thumbnails are always generated as JPEG by sharp
+    res.setHeader('Content-Type', file.thumbnail_path ? 'image/jpeg' : (file.mime_type || 'image/jpeg'));
+    return res.sendFile(thumbFile);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to serve thumbnail' });
+  }
+});
+
 // GET /files/:fileId/download
 router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -183,7 +222,11 @@ router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Resp
       }
     }
 
-    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+    // For images, use inline disposition so browsers can display them
+    const isImage = file.mime_type?.startsWith('image/');
+    res.setHeader('Content-Disposition', isImage
+      ? `inline; filename="${file.filename}"`
+      : `attachment; filename="${file.filename}"`);
     res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
     res.setHeader('Cache-Control', 'private, max-age=86400'); // 24 hour cache
     return res.sendFile(filePath);
@@ -192,55 +235,7 @@ router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Resp
   }
 });
 
-// GET /files/:fileId
-router.get('/:fileId', authenticate, async (req: AuthRequest, res: Response) => {
-  try {
-    const file = await prisma.file.findUnique({
-      where: { id: req.params.fileId, deleted_at: null }
-    });
-
-    if (!file) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    return res.json({
-      ...file,
-      file_size: Number(file.file_size)
-    });
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to get file metadata' });
-  }
-});
-
-// DELETE /files/:fileId
-router.delete('/:fileId', authenticate, async (req: AuthRequest, res: Response) => {
-  try {
-    const file = await prisma.file.findUnique({
-      where: { id: req.params.fileId, uploader_id: req.userId! },
-      select: { storage_path: true }
-    });
-
-    if (!file) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    // Soft delete in DB
-    await prisma.file.update({
-      where: { id: req.params.fileId },
-      data: { deleted_at: new Date() }
-    });
-
-    // Delete from disk
-    const filePath = path.join(uploadDir, file.storage_path);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
-    return res.status(204).send();
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to delete file' });
-  }
-});
+// ========== SPECIFIC PATH ROUTES (must come before /:fileId catch-all) ==========
 
 // GET /files/conversation/:conversationId
 router.get('/conversation/:conversationId', authenticate, async (req: AuthRequest, res: Response) => {
@@ -309,6 +304,58 @@ router.get('/thumbnail/:filename', authenticate, async (req: AuthRequest, res: R
     return res.sendFile(filePath);
   } catch (error) {
     return res.status(500).json({ error: 'Failed to serve thumbnail' });
+  }
+});
+
+// ========== PARAMETERIZED CATCH-ALL ROUTES (must come last) ==========
+
+// GET /files/:fileId — file metadata
+router.get('/:fileId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const file = await prisma.file.findUnique({
+      where: { id: req.params.fileId, deleted_at: null }
+    });
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    return res.json({
+      ...file,
+      file_size: Number(file.file_size)
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to get file metadata' });
+  }
+});
+
+// DELETE /files/:fileId
+router.delete('/:fileId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const file = await prisma.file.findUnique({
+      where: { id: req.params.fileId, uploader_id: req.userId! },
+      select: { storage_path: true }
+    });
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Soft delete in DB
+    await prisma.file.update({
+      where: { id: req.params.fileId },
+      data: { deleted_at: new Date() }
+    });
+
+    // Delete from disk
+    const filePath = path.join(uploadDir, file.storage_path);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to delete file' });
   }
 });
 

@@ -176,8 +176,9 @@ async function getUserConversations(userId: string) {
 const createConversationSchema = z.object({
   participant_id: z.string().uuid().optional(),
   recipient_id: z.string().uuid().optional(),
-}).refine(data => data.participant_id || data.recipient_id, {
-  message: 'Either participant_id or recipient_id is required'
+  user_id: z.string().uuid().optional(),
+}).refine(data => data.participant_id || data.recipient_id || data.user_id, {
+  message: 'Either participant_id, recipient_id, or user_id is required'
 });
 
 // /conversations - GET list or POST new
@@ -191,10 +192,13 @@ router.route('/conversations')
       return res.status(500).json({ error: 'Failed to fetch conversations' });
     }
   })
-  .post(authenticate, validate(createConversationSchema), async (req: AuthRequest, res: Response) => {
+  .post(authenticate, (req: AuthRequest, res: Response, next: any) => {
+    console.log('[DEBUG] POST /conversations body:', JSON.stringify(req.body), 'headers.content-type:', req.headers['content-type']);
+    next();
+  }, validate(createConversationSchema), async (req: AuthRequest, res: Response) => {
     try {
-      const { participant_id, recipient_id } = req.body;
-      const targetUserId = participant_id || recipient_id;
+      const { participant_id, recipient_id, user_id } = req.body;
+      const targetUserId = participant_id || recipient_id || user_id;
 
       if (!targetUserId) {
         return res.status(400).json({ error: 'participant_id or recipient_id required' });
