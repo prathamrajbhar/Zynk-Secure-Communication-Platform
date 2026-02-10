@@ -7,7 +7,7 @@ import { useChatStore, type Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useCryptoStore } from '@/stores/cryptoStore';
-import { waitForCryptoReady } from '@/stores/cryptoStore';
+import { startDecryptionQueueProcessor, stopDecryptionQueueProcessor } from '@/stores/decryptionQueue';
 import { isValidEncryptedMessage, isGroupEncryptedMessage } from '@/lib/crypto';
 import { connectSocket, disconnectSocket, SOCKET_EVENTS } from '@/lib/socket';
 import logger from '@/lib/logger';
@@ -119,6 +119,9 @@ export default function ChatPage() {
 
     const socket = connectSocket(token);
 
+    // Start the background decryption queue processor
+    startDecryptionQueueProcessor();
+
     // Fetch conversations once on mount (not on every reconnect)
     const chatStore = useChatStore.getState();
     chatStore.fetchConversations();
@@ -133,24 +136,30 @@ export default function ChatPage() {
         // addMessage() will preserve it. No need to decrypt.
         decryptedContent = undefined;
       } else {
-        // Incoming message from another user — wait for crypto readiness, then decrypt
+        // Incoming message from another user — use safe decryption
         try {
-          await waitForCryptoReady(5000);
-          const cs = useCryptoStore.getState();
           if (message.encrypted_content) {
-            if (cs.isInitialized && isGroupEncryptedMessage(message.encrypted_content)) {
-              // Group E2EE (v4 envelope) — decrypt with sender key
-              decryptedContent = await cs.decryptGroup(message.sender_id, message.conversation_id, message.encrypted_content);
-            } else if (cs.isInitialized && isValidEncryptedMessage(message.encrypted_content)) {
-              // 1:1 E2EE (v3 envelope)
-              decryptedContent = await cs.decrypt(message.sender_id, message.encrypted_content);
-            } else if (!isValidEncryptedMessage(message.encrypted_content) && !isGroupEncryptedMessage(message.encrypted_content)) {
+            const isGroup = isGroupEncryptedMessage(message.encrypted_content);
+            const isValid = isValidEncryptedMessage(message.encrypted_content);
+            
+            if (isGroup || isValid) {
+              // Use the safe decryption method from chat store
+              const chatStore = useChatStore.getState();
+              decryptedContent = await chatStore.safeDecryptMessage(
+                message.id,
+                message.conversation_id,
+                message.sender_id,
+                message.encrypted_content,
+                isGroup
+              );
+            } else {
               // Not encrypted — use raw content
               decryptedContent = message.encrypted_content;
             }
           }
         } catch (error) {
-          logger.error('[E2EE] Decrypt failed:', error);
+          logger.error('[E2EE] Message decryption failed:', error);
+          // Safe decryption handles the error gracefully, so we get a placeholder
         }
       }
 
@@ -312,6 +321,7 @@ export default function ChatPage() {
 
     return () => {
       disconnectSocket();
+      stopDecryptionQueueProcessor();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);

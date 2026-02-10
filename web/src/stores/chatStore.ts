@@ -4,6 +4,7 @@ import logger from '@/lib/logger';
 import { getSocket, isConnected, SOCKET_EVENTS } from '@/lib/socket';
 import { useCryptoStore } from '@/stores/cryptoStore';
 import { waitForCryptoReady } from '@/stores/cryptoStore';
+import { useDecryptionQueue } from '@/stores/decryptionQueue';
 import { isGroupEncryptedMessage, isEncryptedMessage } from '@/lib/crypto';
 
 export interface Message {
@@ -129,6 +130,8 @@ interface ChatState {
   clearChatHistory: (conversationId: string) => Promise<void>;
   markConversationUnread: (conversationId: string) => void;
   retryDecryptMessages: (conversationId: string) => Promise<void>;
+  updateMessageContent: (messageId: string, content: string) => void;
+  safeDecryptMessage: (messageId: string, conversationId: string, senderId: string, encryptedContent: string, isGroup?: boolean) => Promise<string>;
 }
 
 // Generate temporary ID for optimistic messages
@@ -171,11 +174,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // while fetchConversations already starts running.
       await waitForCryptoReady(8000);
 
-      // Try to decrypt last messages
+      // Try to decrypt last messages using safe decryption
       const cryptoStore = useCryptoStore.getState();
       if (cryptoStore.isInitialized) {
         convs = await Promise.all(convs.map(async (c: Conversation) => {
           if (!c.last_message) return c;
+          
           // Skip already-plain messages
           if (!isEncryptedMessage(c.last_message)) {
             // Might be raw file JSON (non-encrypted file metadata)
@@ -187,31 +191,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
             } catch { /* not JSON, leave as-is */ }
             return c;
           }
+
+          // Use safe decryption for last message
+          let decrypted: string | null = null;
           try {
-            let decrypted: string;
             if (c.type === 'one_to_one') {
               const partnerId = c.other_user?.user_id;
-              if (!partnerId) return c;
-              decrypted = await cryptoStore.decrypt(partnerId, c.last_message);
-            } else if (isGroupEncryptedMessage(c.last_message)) {
-              // Group E2EE: use sender ID from conversation metadata
-              const senderId = c.last_message_sender_id;
-              if (!senderId) return c; // Cannot decrypt without sender ID
-              decrypted = await cryptoStore.decryptGroup(senderId, c.id, c.last_message);
-            } else {
-              return c;
-            }
-            // Check if decrypted content is file metadata JSON
-            try {
-              const parsed = JSON.parse(decrypted);
-              if (parsed.filename) {
-                return { ...c, last_message_decrypted: parsed.mime_type?.startsWith('image/') ? '📷 Photo' : `📎 ${parsed.filename}` };
+              if (partnerId) {
+                decrypted = await get().safeDecryptMessage(`${c.id}_last`, c.id, partnerId, c.last_message, false);
               }
-            } catch { /* not file JSON */ }
-            return { ...c, last_message_decrypted: decrypted };
-          } catch {
-            return c;
+            } else if (isGroupEncryptedMessage(c.last_message)) {
+              const senderId = c.last_message_sender_id;
+              if (senderId) {
+                decrypted = await get().safeDecryptMessage(`${c.id}_last`, c.id, senderId, c.last_message, true);
+              }
+            }
+
+            if (decrypted) {
+              // Check if decrypted content is file metadata JSON
+              try {
+                const parsed = JSON.parse(decrypted);
+                if (parsed.filename) {
+                  return { ...c, last_message_decrypted: parsed.mime_type?.startsWith('image/') ? '📷 Photo' : `📎 ${parsed.filename}` };
+                }
+              } catch { /* not file JSON */ }
+              return { ...c, last_message_decrypted: decrypted };
+            }
+          } catch (error) {
+            logger.warn(`Failed to decrypt last message for conversation ${c.id}:`, error);
           }
+          
+          return c;
         }));
       }
 
@@ -241,60 +251,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Wait for crypto readiness before attempting decryption
       await waitForCryptoReady(8000);
 
-      // Decrypt fetched messages
-      const cryptoStore = useCryptoStore.getState();
+      // Get conversation info and current user
       const conversation = get().conversations.find(c => c.id === conversationId);
       const isOneToOne = conversation?.type === 'one_to_one';
       const partnerId = isOneToOne ? conversation.other_user?.user_id : null;
-
-      // Fallback: find the partner from message sender IDs
       const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
-      const resolvedPartnerId = partnerId
-        || (currentUserId ? messages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
+      const resolvedPartnerId = partnerId || (currentUserId ? messages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
 
-      if (cryptoStore.isInitialized && resolvedPartnerId) {
-        messages = await Promise.all(messages.map(async (m: Message) => {
-          // Skip messages that already have decrypted content
-          if (m.content && !isEncryptedMessage(m.content)) return m;
-          // Try to decrypt any message with encrypted_content (text, file, image)
-          if (!m.encrypted_content) return m;
+      // Use safe decryption for all messages
+      messages = await Promise.all(messages.map(async (m: Message) => {
+        // Skip messages that already have decrypted content
+        if (m.content && !isEncryptedMessage(m.content)) return m;
+        if (!m.encrypted_content) return m;
 
-          // For group conversations, use group E2EE (sender keys)
-          if (!isOneToOne) {
-            if (isGroupEncryptedMessage(m.encrypted_content)) {
-              try {
-                const decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
-                return { ...m, content: decrypted };
-              } catch {
-                return { ...m, content: '[Cannot decrypt message]' };
-              }
-            }
-            return { ...m, content: m.encrypted_content };
-          }
+        // Determine sender and if it's a group
+        const senderId = isOneToOne ? resolvedPartnerId : m.sender_id;
+        if (!senderId) return m;
 
-          try {
-            const decrypted = await cryptoStore.decrypt(resolvedPartnerId, m.encrypted_content);
-            return { ...m, content: decrypted };
-          } catch {
-            return m;
-          }
-        }));
-      } else if (!isOneToOne) {
-        // Group conversation — try group decryption or use raw content
-        messages = await Promise.all(messages.map(async (m: Message) => {
-          if (m.content && !isEncryptedMessage(m.content)) return m;
-          if (!m.encrypted_content) return m;
-          if (cryptoStore.isInitialized && isGroupEncryptedMessage(m.encrypted_content)) {
-            try {
-              const decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
-              return { ...m, content: decrypted };
-            } catch {
-              return { ...m, content: '[Cannot decrypt message]' };
-            }
-          }
-          return { ...m, content: m.encrypted_content };
-        }));
-      }
+        // Use the safe decryption method
+        const content = await get().safeDecryptMessage(m.id, conversationId, senderId, m.encrypted_content, !isOneToOne);
+        return { ...m, content };
+      }));
 
       // Merge: keep any optimistic (pending) messages that aren't in the API response yet
       set(state => {
@@ -357,36 +334,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Wait for crypto before attempting decryption
       await waitForCryptoReady(8000);
 
-      // Decrypt
-      const cryptoStore = useCryptoStore.getState();
+      // Get conversation info and decrypt messages using safe method
       const conversation = get().conversations.find(c => c.id === conversationId);
       const isOneToOne = conversation?.type === 'one_to_one';
       const partnerId = isOneToOne ? conversation.other_user?.user_id : null;
       const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
       const resolvedPartnerId = partnerId || (currentUserId ? olderMessages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
 
-      if (cryptoStore.isInitialized && resolvedPartnerId && isOneToOne) {
-        olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
-          if (m.content && !isEncryptedMessage(m.content)) return m;
-          if (!m.encrypted_content) return m;
-          try {
-            const decrypted = await cryptoStore.decrypt(resolvedPartnerId, m.encrypted_content);
-            return { ...m, content: decrypted };
-          } catch { return m; }
-        }));
-      } else if (!isOneToOne) {
-        olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
-          if (m.content && !isEncryptedMessage(m.content)) return m;
-          if (!m.encrypted_content) return m;
-          if (cryptoStore.isInitialized && isGroupEncryptedMessage(m.encrypted_content)) {
-            try {
-              const decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
-              return { ...m, content: decrypted };
-            } catch { return { ...m, content: '[Cannot decrypt message]' }; }
-          }
-          return { ...m, content: m.encrypted_content };
-        }));
-      }
+      // Use safe decryption for all messages
+      olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
+        if (m.content && !isEncryptedMessage(m.content)) return m;
+        if (!m.encrypted_content) return m;
+        
+        const senderId = isOneToOne ? resolvedPartnerId : m.sender_id;
+        if (!senderId) return m;
+
+        const content = await get().safeDecryptMessage(m.id, conversationId, senderId, m.encrypted_content, !isOneToOne);
+        return { ...m, content };
+      }));
 
       set(state => ({
         messages: { ...state.messages, [conversationId]: [...olderMessages, ...existing] },
@@ -1250,6 +1215,77 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set(state => ({
         messages: { ...state.messages, [conversationId]: updated },
       }));
+    }
+  },
+
+  /**
+   * Update a specific message's content (used by decryption queue when retry succeeds).
+   */
+  updateMessageContent: (messageId: string, content: string) => {
+    set(state => {
+      const newMessages = { ...state.messages };
+      let updated = false;
+      
+      Object.keys(newMessages).forEach(convId => {
+        newMessages[convId] = newMessages[convId].map(msg => {
+          if (msg.id === messageId) {
+            updated = true;
+            return { ...msg, content };
+          }
+          return msg;
+        });
+      });
+      
+      if (updated) {
+        logger.info(`[ChatStore] Updated content for message ${messageId}`);
+        return { messages: newMessages };
+      }
+      return state;
+    });
+  },
+
+  /**
+   * Safely decrypt a message with proper error handling and queue fallback.
+   * Never returns "[Decryption failed]" - always returns meaningful content.
+   */
+  safeDecryptMessage: async (messageId: string, conversationId: string, senderId: string, encryptedContent: string, isGroup = false): Promise<string> => {
+    const cryptoStore = useCryptoStore.getState();
+    const queueStore = useDecryptionQueue.getState();
+    
+    // If crypto isn't ready, show encrypted placeholder and queue for later
+    if (!cryptoStore.isInitialized) {
+      queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, 'Crypto not initialized');
+      return '🔒 Decrypting...';
+    }
+    
+    try {
+      let decrypted: string;
+      
+      if (isGroup) {
+        decrypted = await cryptoStore.decryptGroup(senderId, conversationId, encryptedContent);
+      } else {
+        decrypted = await cryptoStore.decrypt(senderId, encryptedContent);
+      }
+      
+      // Success - remove from failed queue if it was there
+      queueStore.removeFailedDecryption(messageId);
+      return decrypted;
+      
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`[ChatStore] Decryption failed for message ${messageId}:`, error);
+      
+      // Add to retry queue instead of permanent failure
+      queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, errorMsg);
+      
+      // Return a helpful placeholder instead of "[Decryption failed]"
+      if (errorMsg.includes('missing key') || errorMsg.includes('Cannot decrypt')) {
+        return '🔐 Waiting for keys...';
+      }
+      if (errorMsg.includes('not initialized')) {
+        return '🔒 Decrypting...';
+      }
+      return '⏳ Processing message...';
     }
   },
 }));
