@@ -9,12 +9,15 @@ export const metadata: Metadata = {
   title: 'Zynk - Secure Communication',
   description: 'Privacy-first encrypted messaging, calls, and file sharing',
   manifest: '/manifest.json',
-  themeColor: '#5b5fc7',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
     title: 'Zynk',
   },
+};
+
+export const viewport = {
+  themeColor: '#5b5fc7',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

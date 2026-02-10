@@ -201,6 +201,7 @@ export function setupWebSocket(httpServer: HTTPServer) {
     socket.broadcast.emit('user:online', { user_id: userId });
 
     // Mark 'sent' messages from others in this user's conversations as 'delivered'
+    // Limit catch-up to recent messages to avoid slow queries on reconnect
     try {
       const convParticipants = await prisma.conversationParticipant.findMany({
         where: { user_id: userId },
@@ -208,28 +209,40 @@ export function setupWebSocket(httpServer: HTTPServer) {
       });
       const convIds = convParticipants.map(p => p.conversation_id);
 
-      const undeliveredMessages = await prisma.messages.findMany({
-        where: {
-          conversation_id: { in: convIds },
-          sender_id: { not: userId },
-          status: 'sent' as MessageStatus
-        },
-        select: { id: true, sender_id: true, conversation_id: true }
-      });
-
-      if (undeliveredMessages.length > 0) {
-        await prisma.messages.updateMany({
-          where: { id: { in: undeliveredMessages.map(m => m.id) } },
-          data: { status: 'delivered' as MessageStatus }
+      if (convIds.length > 0) {
+        const undeliveredMessages = await prisma.messages.findMany({
+          where: {
+            conversation_id: { in: convIds },
+            sender_id: { not: userId },
+            status: 'sent' as MessageStatus,
+            // Only catch up messages from the last 24 hours to keep the query fast
+            created_at: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+          },
+          select: { id: true, sender_id: true, conversation_id: true },
+          take: 200 // Cap to prevent excessive updates on reconnect
         });
 
-        // Notify senders
-        for (const msg of undeliveredMessages) {
-          io.to(`user:${msg.sender_id}`).emit('message:status', {
-            message_id: msg.id,
-            conversation_id: msg.conversation_id,
-            status: 'delivered'
+        if (undeliveredMessages.length > 0) {
+          await prisma.messages.updateMany({
+            where: { id: { in: undeliveredMessages.map(m => m.id) } },
+            data: { status: 'delivered' as MessageStatus }
           });
+
+          // Batch notify senders (deduplicate by sender to avoid spamming)
+          const senderConvPairs = new Map<string, { message_id: string; conversation_id: string }[]>();
+          for (const msg of undeliveredMessages) {
+            if (!senderConvPairs.has(msg.sender_id)) senderConvPairs.set(msg.sender_id, []);
+            senderConvPairs.get(msg.sender_id)!.push({ message_id: msg.id, conversation_id: msg.conversation_id });
+          }
+          for (const [senderId, msgs] of senderConvPairs) {
+            for (const msg of msgs) {
+              io.to(`user:${senderId}`).emit('message:status', {
+                message_id: msg.message_id,
+                conversation_id: msg.conversation_id,
+                status: 'delivered'
+              });
+            }
+          }
         }
       }
     } catch (error) {
@@ -432,6 +445,13 @@ export function setupWebSocket(httpServer: HTTPServer) {
     socket.on('conversation:read', async (data) => {
       try {
         const { conversation_id } = data;
+        if (!conversation_id || typeof conversation_id !== 'string') return;
+
+        // Verify user is a participant before marking as read
+        const participant = await prisma.conversationParticipant.findUnique({
+          where: { conversation_id_user_id: { conversation_id, user_id: userId } }
+        });
+        if (!participant) return;
 
         // Use transaction for consistency
         await prisma.$transaction([
@@ -864,8 +884,7 @@ export function setupWebSocket(httpServer: HTTPServer) {
           }
 
           // Broadcast offline status FIRST before async DB operations
-          // Use io.except() instead of socket.broadcast as socket may be invalid during disconnect
-          io.except(socket.id).emit('user:offline', { user_id: userId, last_seen: new Date().toISOString() });
+          io.emit('user:offline', { user_id: userId, last_seen: new Date().toISOString() });
 
           // Set user as offline (best-effort, don't delay broadcast)
           try {

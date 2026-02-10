@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { getSocket } from '@/lib/socket';
 import api from '@/lib/api';
+import logger from '@/lib/logger';
 import toast from 'react-hot-toast';
 
 interface CallState {
@@ -67,7 +68,7 @@ async function getIceServers(): Promise<RTCIceServer[]> {
       return cachedIceServers!;
     }
   } catch {
-    console.warn('Failed to fetch ICE servers from API, using defaults');
+    logger.warn('Failed to fetch ICE servers from API, using defaults');
   }
 
   return DEFAULT_ICE_SERVERS;
@@ -128,7 +129,7 @@ async function applyPendingCandidates(pc: RTCPeerConnection) {
     try {
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (error) {
-      console.error('Failed to apply queued ICE candidate:', error);
+      logger.error('Failed to apply queued ICE candidate:', error);
     }
   }
 }
@@ -189,7 +190,7 @@ async function attemptIceRestart(pc: RTCPeerConnection, get: () => CallState) {
   }
 
   iceRestartAttempts++;
-  console.log(`Attempting ICE restart (attempt ${iceRestartAttempts}/${MAX_ICE_RESTART_ATTEMPTS})`);
+  logger.debug(`Attempting ICE restart (attempt ${iceRestartAttempts}/${MAX_ICE_RESTART_ATTEMPTS})`);
 
   try {
     const offer = await pc.createOffer({ iceRestart: true });
@@ -205,7 +206,7 @@ async function attemptIceRestart(pc: RTCPeerConnection, get: () => CallState) {
       });
     }
   } catch (error) {
-    console.error('ICE restart failed:', error);
+    logger.error('ICE restart failed:', error);
     toast.error('Failed to recover connection');
     get().cleanup();
   }
@@ -239,7 +240,7 @@ export const useCallStore = create<CallState>((set, get) => ({
 
       // Handle remote stream
       pc.ontrack = (event) => {
-        console.log('Received remote track:', event.track.kind);
+        logger.debug('Received remote track:', event.track.kind);
         if (event.streams[0]) {
           set({ remoteStream: event.streams[0] });
         }
@@ -267,7 +268,7 @@ export const useCallStore = create<CallState>((set, get) => ({
       // Handle ICE connection state changes
       pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
-        console.log('ICE connection state:', state);
+        logger.debug('ICE connection state:', state);
 
         if (state === 'connected' || state === 'completed') {
           clearCallTimeout();
@@ -279,7 +280,7 @@ export const useCallStore = create<CallState>((set, get) => ({
         } else if (state === 'failed') {
           attemptIceRestart(pc, get);
         } else if (state === 'disconnected') {
-          console.warn('ICE disconnected, waiting for recovery...');
+          logger.warn('ICE disconnected, waiting for recovery...');
           set({ connectionQuality: 'poor' });
           // Wait before attempting ICE restart
           setTimeout(() => {
@@ -292,7 +293,7 @@ export const useCallStore = create<CallState>((set, get) => ({
 
       // Handle connection state changes
       pc.onconnectionstatechange = () => {
-        console.log('Connection state:', pc.connectionState);
+        logger.debug('Connection state:', pc.connectionState);
         if (pc.connectionState === 'failed') {
           attemptIceRestart(pc, get);
         }
@@ -324,7 +325,10 @@ export const useCallStore = create<CallState>((set, get) => ({
       });
 
       // Listen for call initiated confirmation
-      socket?.once('call:initiated', (data: { call_id: string; recipient_online: boolean }) => {
+      const onCallInitiated = (data: { call_id: string; recipient_online: boolean }) => {
+        // Clean up the error listener since we got a successful response
+        socket?.off('call:error', onCallError);
+
         set(state => ({
           activeCall: state.activeCall ? { ...state.activeCall, callId: data.call_id, status: 'ringing' } : null,
         }));
@@ -353,19 +357,25 @@ export const useCallStore = create<CallState>((set, get) => ({
             get().endCall();
           }
         }, CALL_TIMEOUT);
-      });
+      };
 
-      // Listen for busy signal
-      socket?.once('call:error', (data: { message: string; code?: string }) => {
+      // Listen for busy signal or error
+      const onCallError = (data: { message: string; code?: string }) => {
+        // Clean up the initiated listener since we got an error
+        socket?.off('call:initiated', onCallInitiated);
+
         if (data.code === 'USER_BUSY') {
           toast.error('User is busy on another call');
         } else {
           toast.error(data.message || 'Call failed');
         }
         get().cleanup();
-      });
+      };
+
+      socket?.once('call:initiated', onCallInitiated);
+      socket?.once('call:error', onCallError);
     } catch (error) {
-      console.error('Failed to initiate call:', error);
+      logger.error('Failed to initiate call:', error);
       if ((error as Error).name === 'NotAllowedError') {
         toast.error('Camera/microphone permission denied');
       } else if ((error as Error).name === 'NotFoundError') {
@@ -383,6 +393,9 @@ export const useCallStore = create<CallState>((set, get) => ({
     const { activeCall } = get();
     if (!activeCall) return;
 
+    // Clear the incoming call timeout immediately
+    clearCallTimeout();
+
     try {
       // Fetch ICE servers (may have been provided in the incoming call data)
       const iceServers = await getIceServers();
@@ -397,7 +410,7 @@ export const useCallStore = create<CallState>((set, get) => ({
 
       // Handle remote stream
       pc.ontrack = (event) => {
-        console.log('Received remote track:', event.track.kind);
+        logger.debug('Received remote track:', event.track.kind);
         if (event.streams[0]) {
           set({ remoteStream: event.streams[0] });
         }
@@ -418,7 +431,7 @@ export const useCallStore = create<CallState>((set, get) => ({
       // Handle ICE connection state changes
       pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
-        console.log('ICE connection state:', state);
+        logger.debug('ICE connection state:', state);
 
         if (state === 'connected' || state === 'completed') {
           iceRestartAttempts = 0;
@@ -429,7 +442,7 @@ export const useCallStore = create<CallState>((set, get) => ({
         } else if (state === 'failed') {
           attemptIceRestart(pc, get);
         } else if (state === 'disconnected') {
-          console.warn('ICE disconnected');
+          logger.warn('ICE disconnected');
           set({ connectionQuality: 'poor' });
           setTimeout(() => {
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
@@ -440,7 +453,7 @@ export const useCallStore = create<CallState>((set, get) => ({
       };
 
       pc.onconnectionstatechange = () => {
-        console.log('Connection state:', pc.connectionState);
+        logger.debug('Connection state:', pc.connectionState);
         if (pc.connectionState === 'failed') {
           attemptIceRestart(pc, get);
         }
@@ -468,7 +481,7 @@ export const useCallStore = create<CallState>((set, get) => ({
         activeCall: { ...activeCall, status: 'connecting' },
       });
     } catch (error) {
-      console.error('Failed to answer call:', error);
+      logger.error('Failed to answer call:', error);
       if ((error as Error).name === 'NotAllowedError') {
         toast.error('Camera/microphone permission denied');
       } else if ((error as Error).name === 'NotFoundError') {
@@ -642,9 +655,15 @@ export const useCallStore = create<CallState>((set, get) => ({
     if (peerConnection && data.sdp_answer) {
       try {
         clearCallTimeout();
-        await peerConnection.setRemoteDescription(
-          new RTCSessionDescription(JSON.parse(data.sdp_answer))
-        );
+
+        // Check if already have a remote description (prevent InvalidStateError)
+        if (peerConnection.signalingState === 'have-local-offer') {
+          await peerConnection.setRemoteDescription(
+            new RTCSessionDescription(JSON.parse(data.sdp_answer))
+          );
+        } else {
+          logger.warn('Unexpected signaling state for answer:', peerConnection.signalingState);
+        }
 
         await applyPendingCandidates(peerConnection);
 
@@ -652,7 +671,7 @@ export const useCallStore = create<CallState>((set, get) => ({
           activeCall: state.activeCall ? { ...state.activeCall, status: 'connecting' } : null,
         }));
       } catch (error) {
-        console.error('Failed to set remote description:', error);
+        logger.error('Failed to set remote description:', error);
         toast.error('Failed to establish connection');
         get().cleanup();
       }
@@ -671,7 +690,7 @@ export const useCallStore = create<CallState>((set, get) => ({
     try {
       await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
     } catch (error) {
-      console.error('Failed to add ICE candidate:', error);
+      logger.error('Failed to add ICE candidate:', error);
     }
   },
 
@@ -702,6 +721,12 @@ export const useCallStore = create<CallState>((set, get) => ({
     if (!peerConnection || !data.sdp_offer) return;
 
     try {
+      // Only accept renegotiation if in stable state or have-local-offer
+      if (peerConnection.signalingState !== 'stable' && peerConnection.signalingState !== 'have-local-offer') {
+        logger.warn('Ignoring renegotiation in state:', peerConnection.signalingState);
+        return;
+      }
+
       await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(data.sdp_offer)));
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
@@ -713,7 +738,7 @@ export const useCallStore = create<CallState>((set, get) => ({
         target_id: data.from_id,
       });
     } catch (error) {
-      console.error('Failed to handle renegotiation:', error);
+      logger.error('Failed to handle renegotiation:', error);
     }
   },
 
@@ -725,7 +750,7 @@ export const useCallStore = create<CallState>((set, get) => ({
       await peerConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(data.sdp_answer)));
       iceRestartAttempts = 0;
     } catch (error) {
-      console.error('Failed to apply renegotiation answer:', error);
+      logger.error('Failed to apply renegotiation answer:', error);
     }
   },
 
@@ -745,6 +770,15 @@ export const useCallStore = create<CallState>((set, get) => ({
       peerConnection.onicegatheringstatechange = null;
       peerConnection.close();
     }
+
+    // Clean up any leftover socket listeners from call initiation
+    try {
+      const socket = getSocket();
+      if (socket) {
+        socket.removeAllListeners('call:initiated');
+        socket.removeAllListeners('call:error');
+      }
+    } catch { /* socket may not exist */ }
 
     clearCallTimeout();
     clearPendingCandidates();

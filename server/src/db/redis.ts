@@ -62,18 +62,3 @@ export const connectRedis = async () => {
 // Check if Redis is available for operations
 export const isRedisAvailable = (): boolean => isRedisConnected;
 
-// Safe wrapper for Redis operations (graceful degradation)
-export async function safeRedisOp<T>(
-  operation: () => Promise<T>,
-  fallback: T
-): Promise<T> {
-  if (!isRedisConnected) {
-    return fallback;
-  }
-  try {
-    return await operation();
-  } catch (error) {
-    console.error('Redis operation failed:', (error as Error).message);
-    return fallback;
-  }
-}

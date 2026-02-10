@@ -1,4 +1,5 @@
 import axios, { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios';
+import logger from '@/lib/logger';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
@@ -122,7 +123,7 @@ api.interceptors.response.use(
       originalRequest._retryCount = retryCount + 1;
       const delay = getRetryDelay(retryCount);
 
-      console.log(`Retrying request (attempt ${retryCount + 1}/${MAX_RETRIES}) after ${delay}ms`);
+      logger.debug(`Retrying request (attempt ${retryCount + 1}/${MAX_RETRIES}) after ${delay}ms`);
 
       await new Promise(resolve => setTimeout(resolve, delay));
       return api(originalRequest);

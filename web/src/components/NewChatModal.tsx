@@ -4,14 +4,12 @@ import { useState, useRef } from 'react';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
 import { X, Search, Loader2, MessageCircle } from 'lucide-react';
-import { getInitials, cn } from '@/lib/utils';
+import { getInitials, cn, getAvatarColor } from '@/lib/utils';
 import api from '@/lib/api';
+import logger from '@/lib/logger';
 import toast from 'react-hot-toast';
 
 interface SearchUser { user_id: string; username: string; display_name: string | null; }
-
-const avatarColors = ['bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500', 'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500'];
-function getColor(name: string) { let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return avatarColors[Math.abs(h) % avatarColors.length]; }
 
 export default function NewChatModal() {
   const { showNewChat, setShowNewChat } = useUIStore();
@@ -37,7 +35,7 @@ export default function NewChatModal() {
   const handleStartConversation = async (userId: string) => {
     // Defensive validation - prevent empty body requests
     if (!userId || typeof userId !== 'string' || userId.trim() === '') {
-      console.error('[NewChatModal] Invalid userId:', userId);
+      logger.error('[NewChatModal] Invalid userId:', userId);
       toast.error('Invalid user selected');
       return;
     }
@@ -86,7 +84,7 @@ export default function NewChatModal() {
               <button key={u.user_id} onClick={() => handleStartConversation(u.user_id)}
                 disabled={isStarting}
                 className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-all duration-200 text-left group disabled:opacity-50 disabled:pointer-events-none">
-                <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getColor(u.username))} key={`avatar-${u.user_id}`}>
+                <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getAvatarColor(u.username))} key={`avatar-${u.user_id}`}>
                   {getInitials(u.display_name || u.username)}
                 </div>
                 <div className="flex-1 min-w-0" key={`content-${u.user_id}`}>

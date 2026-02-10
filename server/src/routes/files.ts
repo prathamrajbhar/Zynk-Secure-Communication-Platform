@@ -80,6 +80,18 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
     const { conversation_id } = req.body;
     const file = req.file;
 
+    // Verify user has access to the conversation (if provided)
+    if (conversation_id) {
+      const participant = await prisma.conversationParticipant.findFirst({
+        where: { conversation_id, user_id: req.userId! }
+      });
+      if (!participant) {
+        // Clean up uploaded file since access was denied
+        fs.unlinkSync(file.path);
+        return res.status(403).json({ error: 'Not a participant in this conversation' });
+      }
+    }
+
     // Calculate file hash using streaming to avoid loading entire file into memory
     const hash = await new Promise<string>((resolve, reject) => {
       const hashStream = crypto.createHash('sha256');

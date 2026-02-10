@@ -5,7 +5,8 @@
  * Also handles app badge count and notification sounds.
  */
 
-let permissionGranted = false;
+import logger from '@/lib/logger';
+
 let notificationSoundEnabled = true;
 
 // Preload notification sounds
@@ -138,12 +139,11 @@ function updateFaviconBadge(count: number): void {
  */
 export async function requestNotificationPermission(): Promise<boolean> {
   if (typeof window === 'undefined' || !('Notification' in window)) {
-    console.warn('Browser does not support notifications');
+    logger.warn('Browser does not support notifications');
     return false;
   }
 
   if (Notification.permission === 'granted') {
-    permissionGranted = true;
     return true;
   }
 
@@ -153,8 +153,7 @@ export async function requestNotificationPermission(): Promise<boolean> {
 
   try {
     const result = await Notification.requestPermission();
-    permissionGranted = result === 'granted';
-    return permissionGranted;
+    return result === 'granted';
   } catch {
     return false;
   }

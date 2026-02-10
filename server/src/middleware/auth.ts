@@ -62,14 +62,6 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
 
     // If not cached, validate session in database
     if (!sessionValid) {
-      // DEBUG: Log the lookup params
-      console.log('[AUTH DEBUG] Looking up session:', {
-        user_id: decoded.userId,
-        device_id: decoded.deviceId,
-        token_prefix: token.substring(0, 30),
-        now: new Date().toISOString(),
-      });
-
       const session = await prisma.session.findFirst({
         where: {
           user_id: decoded.userId,
@@ -81,22 +73,6 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       });
 
       if (!session) {
-        // DEBUG: Check if a session exists at all for this user/device
-        const anySession = await prisma.session.findFirst({
-          where: {
-            user_id: decoded.userId,
-            device_id: decoded.deviceId,
-          },
-          select: { id: true, session_token: true, expires_at: true }
-        });
-        console.log('[AUTH DEBUG] Session not found. Any session for user/device?', anySession ? {
-          id: anySession.id,
-          tokenMatch: anySession.session_token === token,
-          token_prefix_db: anySession.session_token.substring(0, 30),
-          expires_at: anySession.expires_at,
-          expired: anySession.expires_at < new Date(),
-        } : 'NO SESSION AT ALL');
-
         // Cache invalid result
         if (isRedisAvailable()) {
           try {

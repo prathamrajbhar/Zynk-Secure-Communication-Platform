@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '@/lib/api';
+import logger from '@/lib/logger';
 import { getSocket, isConnected, SOCKET_EVENTS } from '@/lib/socket';
 import { useCryptoStore } from '@/stores/cryptoStore';
 import { isValidEncryptedMessage } from '@/lib/crypto';
@@ -71,6 +72,15 @@ interface ChatState {
   // Message queue for offline/failed messages
   pendingMessages: Map<string, PendingMessage>;
   failedMessages: Map<string, PendingMessage>;
+  // Track timeouts for optimistic sends to avoid false failures
+  sendTimeouts: Map<string, ReturnType<typeof setTimeout>>;
+
+  // Chat management state (client-side)
+  pinnedChats: Set<string>;
+  mutedChats: Set<string>;
+  archivedChats: Set<string>;
+  starredMessages: Set<string>;
+  pinnedMessages: Record<string, string[]>; // conversationId -> messageId[]
 
   // Actions
   fetchConversations: () => Promise<void>;
@@ -95,6 +105,17 @@ interface ChatState {
   startConversation: (recipientId: string) => Promise<string>;
   markConversationRead: (conversationId: string) => void;
   sendTyping: (conversationId: string, isTyping: boolean) => void;
+
+  // Chat management actions
+  togglePinChat: (conversationId: string) => void;
+  toggleMuteChat: (conversationId: string) => void;
+  toggleArchiveChat: (conversationId: string) => void;
+  toggleStarMessage: (messageId: string) => void;
+  togglePinMessage: (conversationId: string, messageId: string) => void;
+  editMessage: (messageId: string, newContent: string) => Promise<void>;
+  deleteConversation: (conversationId: string) => Promise<void>;
+  clearChatHistory: (conversationId: string) => Promise<void>;
+  markConversationUnread: (conversationId: string) => void;
 }
 
 // Generate temporary ID for optimistic messages
@@ -110,8 +131,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoadingMessages: false,
   pendingMessages: new Map(),
   failedMessages: new Map(),
+  sendTimeouts: new Map(),
   lastTypingSent: 0,
   isTypingSent: false,
+
+  // Chat management state — hydrate from localStorage
+  pinnedChats: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-pinned-chats') || '[]' : '[]')),
+  mutedChats: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-muted-chats') || '[]' : '[]')),
+  archivedChats: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-archived-chats') || '[]' : '[]')),
+  starredMessages: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-starred-messages') || '[]' : '[]')),
+  pinnedMessages: JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-pinned-messages') || '{}' : '{}'),
 
   fetchConversations: async () => {
     set({ isLoadingConversations: true });
@@ -164,7 +193,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       set({ onlineUsers: onlineIds });
     } catch (error) {
-      console.error('Failed to fetch conversations:', error);
+      logger.error('Failed to fetch conversations:', error);
     } finally {
       set({ isLoadingConversations: false });
     }
@@ -179,7 +208,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Decrypt fetched messages
       const cryptoStore = useCryptoStore.getState();
       const conversation = get().conversations.find(c => c.id === conversationId);
-      const partnerId = conversation?.type === 'one_to_one' ? conversation.other_user?.user_id : null;
+      const isOneToOne = conversation?.type === 'one_to_one';
+      const partnerId = isOneToOne ? conversation.other_user?.user_id : null;
 
       // Fallback: find the partner from message sender IDs
       const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
@@ -192,6 +222,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (m.content && !isValidEncryptedMessage(m.content)) return m;
           // Try to decrypt any message with encrypted_content (text, file, image)
           if (!m.encrypted_content) return m;
+
+          // For group conversations, content is not E2EE encrypted — use as-is
+          if (!isOneToOne) {
+            return { ...m, content: m.encrypted_content };
+          }
+
           try {
             const decrypted = await cryptoStore.decrypt(resolvedPartnerId, m.encrypted_content);
             return { ...m, content: decrypted };
@@ -199,6 +235,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return m;
           }
         }));
+      } else if (!isOneToOne) {
+        // Group conversation with no crypto — use encrypted_content as plain content
+        messages = messages.map((m: Message) => {
+          if (m.content && !isValidEncryptedMessage(m.content)) return m;
+          if (!m.encrypted_content) return m;
+          return { ...m, content: m.encrypted_content };
+        });
       }
 
       // Merge: keep any optimistic (pending) messages that aren't in the API response yet
@@ -212,7 +255,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
     } catch (error) {
-      console.error('Failed to fetch messages:', error);
+      logger.error('Failed to fetch messages:', error);
     } finally {
       set({ isLoadingMessages: false });
     }
@@ -259,7 +302,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           encryptedContent = await cryptoStore.encrypt(recipientId, content);
         }
       } catch (error) {
-        console.error('Encryption failed, message not sent:', error);
+        logger.error('Encryption failed, message not sent:', error);
         return;
       }
 
@@ -271,7 +314,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     };
 
-    encryptAndSend().catch(console.error);
+    encryptAndSend().catch(logger.error);
   },
 
   // Optimistic send - adds message to UI immediately, ENCRYPTS before transmission
@@ -349,13 +392,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           if (cryptoStore.isInitialized && recipientId) {
             encryptedContent = await cryptoStore.encrypt(recipientId, content);
+          } else if (!recipientId && conversation?.type === 'group') {
+            // Group messages: send without E2EE (group E2EE not implemented)
+            encryptedContent = content;
           } else if (!cryptoStore.isInitialized) {
-            console.error('[E2EE] Not initialized — refusing to send plaintext');
+            logger.error('[E2EE] Not initialized — refusing to send plaintext');
             get().markMessageFailed(tempId);
             return;
           }
         } catch (error) {
-          console.error('[E2EE] Encryption failed:', error);
+          logger.error('[E2EE] Encryption failed:', error);
           get().markMessageFailed(tempId);
           return;
         }
@@ -371,17 +417,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
 
       encryptAndSend().catch((error) => {
-        console.error('Send failed:', error);
+        logger.error('Send failed:', error);
         get().markMessageFailed(tempId);
       });
 
       // Set timeout for marking as failed if no response
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         const pending = get().pendingMessages.get(tempId);
         if (pending) {
+          // Only mark as failed if still pending (not already confirmed)
+          logger.warn(`Message ${tempId} send timeout — marking as failed`);
           get().markMessageFailed(tempId);
         }
       }, 30000); // 30 second timeout
+
+      // Store timeout reference so it can be cleared when message is confirmed/failed
+      set(state => {
+        const updated = new Map(state.sendTimeouts);
+        updated.set(tempId, timeoutId);
+        return { sendTimeouts: updated };
+      });
     } else {
       // Mark as pending/queued since we're offline
       get().updateMessageStatus(tempId, 'pending');
@@ -392,6 +447,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   markMessageSent: (tempId, realMessage) => {
     set(state => {
+      // Clear any pending "send timeout" for this optimistic message
+      const timeoutId = state.sendTimeouts.get(tempId);
+      if (timeoutId) clearTimeout(timeoutId);
+      const updatedTimeouts = new Map(state.sendTimeouts);
+      updatedTimeouts.delete(tempId);
+
       const convId = realMessage.conversation_id;
       const existing = state.messages[convId] || [];
 
@@ -412,12 +473,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         messages: { ...state.messages, [convId]: updatedMessages },
         pendingMessages: updatedPending,
+        sendTimeouts: updatedTimeouts,
       };
     });
   },
 
   markMessageFailed: (tempId) => {
     set(state => {
+      // Clear any pending "send timeout" for this optimistic message
+      const timeoutId = state.sendTimeouts.get(tempId);
+      if (timeoutId) clearTimeout(timeoutId);
+      const updatedTimeouts = new Map(state.sendTimeouts);
+      updatedTimeouts.delete(tempId);
+
       // Move from pending to failed
       const pending = state.pendingMessages.get(tempId);
       if (!pending) return state;
@@ -441,6 +509,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: { ...state.messages, [convId]: updatedMessages },
         pendingMessages: updatedPending,
         failedMessages: updatedFailed,
+        sendTimeouts: updatedTimeouts,
       };
     });
   },
@@ -451,6 +520,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const socket = getSocket();
     if (!socket || !isConnected()) return;
+
+    // Clear any old timeout if it exists (shouldn't, but be defensive)
+    const oldTimeout = get().sendTimeouts.get(tempId);
+    if (oldTimeout) {
+      clearTimeout(oldTimeout);
+      set(state => {
+        const updated = new Map(state.sendTimeouts);
+        updated.delete(tempId);
+        return { sendTimeouts: updated };
+      });
+    }
 
     // Move back to pending
     set(state => {
@@ -493,13 +573,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
           reply_to_id: failed.replyToId,
           temp_id: tempId,
         });
+
+        // Re-arm timeout for retry
+        const timeoutId = setTimeout(() => {
+          const pending = get().pendingMessages.get(tempId);
+          if (pending) {
+            logger.warn(`Message ${tempId} retry timeout — marking as failed`);
+            get().markMessageFailed(tempId);
+          }
+        }, 30000);
+        set(state => {
+          const updated = new Map(state.sendTimeouts);
+          updated.set(tempId, timeoutId);
+          return { sendTimeouts: updated };
+        });
       } catch (error) {
-        console.error('Retry encryption failed:', error);
+        logger.error('Retry encryption failed:', error);
         get().markMessageFailed(tempId);
       }
     };
 
-    encryptAndRetry().catch(console.error);
+    encryptAndRetry().catch(logger.error);
   },
 
   processMessageQueue: () => {
@@ -525,7 +619,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           temp_id: tempId,
         });
       } catch (error) {
-        console.error('Failed to encrypt queued message:', error);
+        logger.error('Failed to encrypt queued message:', error);
         get().markMessageFailed(tempId);
       }
     });
@@ -535,14 +629,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(state => {
       const convId = message.conversation_id;
       const existing = state.messages[convId] || [];
+      const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
 
       // Check if this is a confirmation of an optimistic message
       const tempId = (message.metadata as { temp_id?: string })?.temp_id || (message as Message & { temp_id?: string }).temp_id;
 
-      // Robust deduplication: Check if we already have this message by ID or tempId
+      // If this is our own message echoed back via broadcast, check for optimistic match
+      if (message.sender_id === currentUserId && tempId) {
+        const optimisticIndex = existing.findIndex(m => m.tempId === tempId);
+        if (optimisticIndex !== -1) {
+          // Replace optimistic with real message, preserving plaintext content
+          const updatedMessagesList = [...existing];
+          const oldMsg = updatedMessagesList[optimisticIndex];
+          updatedMessagesList[optimisticIndex] = {
+            ...oldMsg,
+            ...message,
+            content: oldMsg.content || message.content, // Keep optimistic plaintext
+            isOptimistic: false,
+            tempId: tempId,
+          };
+          const updatedPending = new Map(state.pendingMessages);
+          updatedPending.delete(tempId);
+          return {
+            messages: { ...state.messages, [convId]: updatedMessagesList },
+            pendingMessages: updatedPending,
+          };
+        }
+      }
+
+      // If this is our own message echoed back without temp_id, skip it 
+      // (the optimistic message is already in the list)
+      if (message.sender_id === currentUserId && !tempId) {
+        const alreadyExists = existing.some(m =>
+          m.id === message.id || (m.isOptimistic && m.created_at === message.created_at)
+        );
+        if (alreadyExists) return state;
+      }
+
+      // Robust deduplication: Check if we already have this message by ID
       const isDuplicate = existing.some(m =>
-        (m.id === message.id && !m.isOptimistic) ||
-        (tempId && m.tempId === tempId && !m.isOptimistic)
+        (m.id === message.id && !m.isOptimistic)
       );
 
       if (isDuplicate) {
@@ -560,8 +686,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const oldMsg = updatedMessagesList[optimisticIndex];
 
         // CRITICAL: Preserve the optimistic plaintext if the broadcast doesn't
-        // carry properly decrypted content (e.g. crypto wasn't initialized yet
-        // when the echo arrived, so message.content is undefined or raw JSON)
+        // carry properly decrypted content
         const keepOldContent = oldMsg.isOptimistic && oldMsg.content &&
           (!message.content || isValidEncryptedMessage(message.content));
 
@@ -570,7 +695,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...message,
           content: keepOldContent ? oldMsg.content : (message.content ?? oldMsg.content),
           isOptimistic: false,
-          tempId: tempId || oldMsg.tempId // Preserve tempId for future deduplication
+          tempId: tempId || oldMsg.tempId,
         };
 
         const updatedPending = new Map(state.pendingMessages);
@@ -738,7 +863,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   startConversation: async (recipientId: string) => {
     // Defensive validation - prevent empty body requests
     if (!recipientId || typeof recipientId !== 'string' || recipientId.trim() === '') {
-      console.error('[chatStore.startConversation] Invalid recipientId:', recipientId);
+      logger.error('[chatStore.startConversation] Invalid recipientId:', recipientId);
       throw new Error('Invalid recipient ID');
     }
 
@@ -756,8 +881,134 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await get().fetchConversations();
       return res.data.conversation_id;
     } catch (error) {
-      console.error('Failed to start conversation:', error);
+      logger.error('Failed to start conversation:', error);
       throw error;
     }
+  },
+
+  // ═══════════════════════════════════════════
+  // Chat Management Actions
+  // ═══════════════════════════════════════════
+
+  togglePinChat: (conversationId: string) => {
+    set(state => {
+      const updated = new Set(state.pinnedChats);
+      if (updated.has(conversationId)) updated.delete(conversationId);
+      else updated.add(conversationId);
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-pinned-chats', JSON.stringify([...updated]));
+      return { pinnedChats: updated };
+    });
+  },
+
+  toggleMuteChat: (conversationId: string) => {
+    set(state => {
+      const updated = new Set(state.mutedChats);
+      if (updated.has(conversationId)) updated.delete(conversationId);
+      else updated.add(conversationId);
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-muted-chats', JSON.stringify([...updated]));
+      return { mutedChats: updated };
+    });
+  },
+
+  toggleArchiveChat: (conversationId: string) => {
+    set(state => {
+      const updated = new Set(state.archivedChats);
+      if (updated.has(conversationId)) updated.delete(conversationId);
+      else updated.add(conversationId);
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-archived-chats', JSON.stringify([...updated]));
+      return { archivedChats: updated };
+    });
+  },
+
+  toggleStarMessage: (messageId: string) => {
+    set(state => {
+      const updated = new Set(state.starredMessages);
+      if (updated.has(messageId)) updated.delete(messageId);
+      else updated.add(messageId);
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-starred-messages', JSON.stringify([...updated]));
+      return { starredMessages: updated };
+    });
+  },
+
+  togglePinMessage: (conversationId: string, messageId: string) => {
+    set(state => {
+      const current = state.pinnedMessages[conversationId] || [];
+      const updated = current.includes(messageId)
+        ? current.filter(id => id !== messageId)
+        : [...current, messageId].slice(-3); // max 3 pinned per conversation
+      const newPinnedMessages = { ...state.pinnedMessages, [conversationId]: updated };
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-pinned-messages', JSON.stringify(newPinnedMessages));
+      return { pinnedMessages: newPinnedMessages };
+    });
+  },
+
+  editMessage: async (messageId: string, newContent: string) => {
+    try {
+      // Encrypt the new content
+      let encryptedContent = newContent;
+      const cryptoStore = useCryptoStore.getState();
+
+      // Find the conversation and recipient for encryption
+      const allMessages = get().messages;
+      let convId = '';
+      let foundMsg: Message | undefined;
+      for (const cid in allMessages) {
+        const msg = allMessages[cid].find(m => m.id === messageId);
+        if (msg) { convId = cid; foundMsg = msg; break; }
+      }
+
+      if (!convId) throw new Error('Message not found');
+
+      const conversation = get().conversations.find(c => c.id === convId);
+      const recipientId = conversation?.type === 'one_to_one' ? conversation.other_user?.user_id : null;
+
+      if (cryptoStore.isInitialized && recipientId) {
+        encryptedContent = await cryptoStore.encrypt(recipientId, newContent);
+      }
+
+      await api.put(`/messages/${messageId}`, { encrypted_content: encryptedContent });
+
+      // Update local state optimistically
+      set(state => {
+        const existing = state.messages[convId] || [];
+        const updatedMessages = existing.map(m =>
+          m.id === messageId ? { ...m, content: newContent, edited_at: new Date().toISOString() } : m
+        );
+        return { messages: { ...state.messages, [convId]: updatedMessages } };
+      });
+    } catch (error) {
+      logger.error('Failed to edit message:', error);
+      throw error;
+    }
+  },
+
+  deleteConversation: async (conversationId: string) => {
+    // Client-side: remove from conversations list and clear messages
+    set(state => {
+      const updatedConversations = state.conversations.filter(c => c.id !== conversationId);
+      const updatedMessages = { ...state.messages };
+      delete updatedMessages[conversationId];
+      return {
+        conversations: updatedConversations,
+        messages: updatedMessages,
+        activeConversation: state.activeConversation === conversationId ? null : state.activeConversation,
+      };
+    });
+  },
+
+  clearChatHistory: async (conversationId: string) => {
+    // Clear all messages from local state for this conversation
+    set(state => ({
+      messages: { ...state.messages, [conversationId]: [] },
+    }));
+  },
+
+  markConversationUnread: (conversationId: string) => {
+    set(state => {
+      const updatedConversations = state.conversations.map(c =>
+        c.id === conversationId ? { ...c, unread_count: Math.max(c.unread_count, 1) } : c
+      );
+      return { conversations: updatedConversations };
+    });
   },
 }));

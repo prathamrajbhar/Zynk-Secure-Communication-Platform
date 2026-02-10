@@ -7,7 +7,9 @@ import { useChatStore, type Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useCryptoStore } from '@/stores/cryptoStore';
+import { isValidEncryptedMessage } from '@/lib/crypto';
 import { connectSocket, disconnectSocket, SOCKET_EVENTS } from '@/lib/socket';
+import logger from '@/lib/logger';
 import Sidebar from '@/components/Sidebar';
 import ChatArea from '@/components/ChatArea';
 import CallOverlay from '@/components/CallOverlay';
@@ -108,6 +110,19 @@ export default function ChatPage() {
     const token = localStorage.getItem('session_token');
     if (!token) return;
 
+    // Ensure E2EE is initialized before connecting socket
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      try {
+        const userData = JSON.parse(userStr);
+        if (userData.id) {
+          useCryptoStore.getState().initialize(userData.id).catch(err => {
+            logger.error('[E2EE] Pre-socket initialization failed:', err);
+          });
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
     const socket = connectSocket(token);
 
     // Fetch conversations once on mount (not on every reconnect)
@@ -127,15 +142,21 @@ export default function ChatPage() {
         // Incoming message from another user — decrypt
         try {
           const cs = useCryptoStore.getState();
-          if (cs.isInitialized && message.encrypted_content) {
-            decryptedContent = await cs.decrypt(message.sender_id, message.encrypted_content);
+          if (message.encrypted_content) {
+            // Check if message is actually E2EE encrypted
+            if (cs.isInitialized && isValidEncryptedMessage(message.encrypted_content)) {
+              decryptedContent = await cs.decrypt(message.sender_id, message.encrypted_content);
+            } else if (!isValidEncryptedMessage(message.encrypted_content)) {
+              // Not encrypted (e.g. group message) — use raw content
+              decryptedContent = message.encrypted_content;
+            }
           }
         } catch (error) {
-          console.error('[E2EE] Decrypt failed:', error);
+          logger.error('[E2EE] Decrypt failed:', error);
         }
       }
 
-      const decryptedMessage = { ...message, content: decryptedContent };
+      const decryptedMessage = { ...message, content: decryptedContent ?? message.content };
       useChatStore.getState().addMessage(decryptedMessage);
 
       // Automatically mark as delivered if it's not our own message

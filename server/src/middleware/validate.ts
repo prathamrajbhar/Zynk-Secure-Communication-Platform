@@ -51,9 +51,4 @@ export const validateQuery = (schema: z.ZodSchema) => {
   };
 };
 
-/**
- * Validate that a string is a valid UUID (prevents injection in URL params)
- */
-export const isValidUUID = (str: string): boolean => {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
-};
+export default { validate, validateQuery };

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '@/lib/api';
+import logger from '@/lib/logger';
 import { useCryptoStore } from '@/stores/cryptoStore';
 
 interface User {
@@ -42,7 +43,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // Initialize E2EE crypto layer
         if (user.id) {
           useCryptoStore.getState().initialize(user.id).catch(err => {
-            console.error('[E2EE] Page hydration initialization failed:', err);
+            logger.error('[E2EE] Page hydration initialization failed:', err);
           });
         }
       } catch {
@@ -69,7 +70,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       await useCryptoStore.getState().initialize(user_id);
     } catch (error) {
-      console.error('E2EE initialization failed:', error);
+      logger.error('[E2EE] Initialization failed:', error);
     }
   },
 
@@ -93,7 +94,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       await useCryptoStore.getState().initialize(user_id);
     } catch (error) {
-      console.error('E2EE initialization failed:', error);
+      logger.error('[E2EE] Initialization failed:', error);
     }
   },
 
@@ -111,7 +112,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       await useCryptoStore.getState().initialize(user_id);
     } catch (error) {
-      console.error('E2EE key generation failed:', error);
+      logger.error('[E2EE] Key generation failed:', error);
     }
   },
 

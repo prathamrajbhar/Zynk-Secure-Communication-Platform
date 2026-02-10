@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '@/lib/api';
+import logger from '@/lib/logger';
 
 export interface CallLog {
     call_id: string;
@@ -35,7 +36,7 @@ export const useCallHistoryStore = create<CallHistoryState>((set) => ({
             });
             set({ callLogs: response.data.calls, isLoading: false });
         } catch (error) {
-            console.error('Failed to fetch call history:', error);
+            logger.error('Failed to fetch call history:', error);
             set({ error: 'Failed to load call history', isLoading: false });
         }
     },

@@ -4,14 +4,11 @@ import { useState, useRef, useEffect } from 'react';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
 import { X, Search, Loader2, Users, Check, ArrowLeft, ArrowRight } from 'lucide-react';
-import { getInitials, cn } from '@/lib/utils';
+import { getInitials, cn, getAvatarColor } from '@/lib/utils';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 
 interface SearchUser { id: string; username: string; display_name: string | null; }
-
-const avatarColors = ['bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500', 'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500'];
-function getColor(name: string) { let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return avatarColors[Math.abs(h) % avatarColors.length]; }
 
 export default function GroupCreateModal() {
   const { showGroupCreate, setShowGroupCreate } = useUIStore();
@@ -139,7 +136,7 @@ export default function GroupCreateModal() {
                   <button key={u.id} onClick={() => toggleMember(u)}
                     className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-all duration-200 text-left group">
                     <div className="relative">
-                      <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getColor(u.username), isSelected && 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]')}>
+                      <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getAvatarColor(u.username), isSelected && 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]')}>
                         {getInitials(u.display_name || u.username)}
                       </div>
                       {isSelected && (

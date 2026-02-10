@@ -17,6 +17,7 @@
 
 import { create } from 'zustand';
 import api from '@/lib/api';
+import logger from '@/lib/logger';
 import {
   generateKeyPair,
   buildKeyUploadPayload,
@@ -41,6 +42,7 @@ function loadKeys(userId: string): { publicKey: string; privateKey: string } | n
   return null;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function clearKeys(userId: string) {
   localStorage.removeItem(`zynk_pub_${userId}`);
   localStorage.removeItem(`zynk_priv_${userId}`);
@@ -78,28 +80,28 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
    */
   initialize: async (userId: string) => {
     if (!userId) return;
-    console.log('[E2EE] Initializing for user:', userId);
+    logger.debug('[E2EE] Initializing for user:', userId);
 
     // Already initialized for this user?
     const state = get();
     if (state.isInitialized && state.userId === userId && state.privateKey) {
-      console.log('[E2EE] Already initialized');
+      logger.debug('[E2EE] Already initialized');
       return;
     }
 
     // Try to load existing keys
     const existing = loadKeys(userId);
     if (existing) {
-      console.log('[E2EE] Loaded existing key pair from localStorage');
+      logger.debug('[E2EE] Loaded existing key pair from localStorage');
 
       // Re-upload to server to ensure it has our current key
       // (handles cases where previous upload failed or server was reset)
       try {
         const payload = await buildKeyUploadPayload(existing.publicKey);
         await api.post('/keys/upload', payload);
-        console.log('[E2EE] Re-synced key with server');
+        logger.debug('[E2EE] Re-synced key with server');
       } catch (e) {
-        console.warn('[E2EE] Key re-sync failed (non-fatal):', e);
+        logger.warn('[E2EE] Key re-sync failed (non-fatal):', e);
       }
 
       set({
@@ -113,7 +115,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     }
 
     // First time — generate and upload
-    console.log('[E2EE] Generating new key pair...');
+    logger.debug('[E2EE] Generating new key pair...');
     try {
       const kp = await generateKeyPair();
 
@@ -121,7 +123,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       const payload = await buildKeyUploadPayload(kp.publicKey);
       await api.post('/keys/upload', payload);
       storeKeys(userId, kp.publicKey, kp.privateKey);
-      console.log('[E2EE] Keys generated and uploaded');
+      logger.debug('[E2EE] Keys generated and uploaded');
 
       set({
         isInitialized: true,
@@ -131,7 +133,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         aesKeys: new Map(),
       });
     } catch (err) {
-      console.error('[E2EE] Key generation/upload failed:', err);
+      logger.error('[E2EE] Key generation/upload failed:', err);
       throw err;
     }
   },
@@ -164,7 +166,8 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     if (!privateKey) throw new Error('E2EE not initialized');
 
     if (!isValidEncryptedMessage(ciphertextJson)) {
-      return '[Unencrypted message]';
+      // Not an encrypted envelope — return as-is (plain text, file JSON, etc.)
+      return ciphertextJson;
     }
 
     // Get or derive AES key
@@ -179,9 +182,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
     try {
       return await decryptText(aesKey, ciphertextJson);
-    } catch (firstErr) {
+    } catch {
       // Retry once with fresh key fetch (handles remote key rotation)
-      console.warn('[E2EE] Decrypt failed, retrying with fresh key...', firstErr);
+      logger.warn('[E2EE] Decrypt failed, retrying with fresh key...');
       try {
         aesKeys.delete(remoteUserId);
         const remotePub = await fetchRemotePublicKey(remoteUserId);
@@ -191,7 +194,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         set({ aesKeys: new Map(aesKeys) });
         return await decryptText(aesKey, ciphertextJson);
       } catch (retryErr) {
-        console.error('[E2EE] Decrypt retry failed:', retryErr);
+        logger.error('[E2EE] Decrypt retry failed:', retryErr);
         return '[Decryption failed]';
       }
     }
@@ -209,11 +212,11 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   /**
-   * Clear all crypto state (logout).
+   * Clear in-memory crypto state (logout).
+   * Keys are preserved in localStorage so re-login doesn't require key re-generation.
+   * Call clearKeys() explicitly to fully wipe keys (e.g., account deletion).
    */
   cleanup: () => {
-    const { userId } = get();
-    if (userId) clearKeys(userId);
     set({
       isInitialized: false,
       userId: null,
@@ -226,18 +229,35 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
 // ========== Helper: fetch remote user's public key from server ==========
 
+// Cache remote public keys to avoid redundant API calls
+const remoteKeyCache = new Map<string, { key: string; fetchedAt: number }>();
+const REMOTE_KEY_CACHE_TTL = 600000; // 10 minutes
+
 async function fetchRemotePublicKey(remoteUserId: string): Promise<string | null> {
+  // Check cache first
+  const cached = remoteKeyCache.get(remoteUserId);
+  if (cached && Date.now() - cached.fetchedAt < REMOTE_KEY_CACHE_TTL) {
+    return cached.key;
+  }
+
   try {
     const res = await api.get(`/keys/${remoteUserId}/identity`);
     const key = res.data.identity_keys?.[0]?.identity_key;
-    if (key) return key;
+    if (key) {
+      remoteKeyCache.set(remoteUserId, { key, fetchedAt: Date.now() });
+      return key;
+    }
   } catch { /* fall through */ }
 
   try {
     const res = await api.get(`/keys/${remoteUserId}/bundle`);
-    return res.data.identity_key || null;
+    const key = res.data.identity_key || null;
+    if (key) {
+      remoteKeyCache.set(remoteUserId, { key, fetchedAt: Date.now() });
+    }
+    return key;
   } catch {
-    console.error('[E2EE] Failed to fetch public key for', remoteUserId);
+    logger.error('[E2EE] Failed to fetch public key for', remoteUserId);
     return null;
   }
 }

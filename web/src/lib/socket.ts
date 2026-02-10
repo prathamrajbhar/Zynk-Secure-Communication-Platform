@@ -1,5 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import { useConnectionStore, getQualityFromLatency } from '@/stores/connectionStore';
+import logger from '@/lib/logger';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:8000';
 
@@ -83,7 +84,7 @@ function startHeartbeat() {
 
       // Set timeout for pong response
       heartbeatTimeout = setTimeout(() => {
-        console.warn('Heartbeat timeout - connection may be stale');
+        logger.warn('Heartbeat timeout - connection may be stale');
         getConnectionStore().setQuality('poor', -1);
       }, HEARTBEAT_TIMEOUT);
     }
@@ -161,14 +162,14 @@ export function connectSocket(token: string): Socket {
 
   // Connection events
   socket.on(SOCKET_EVENTS.CONNECT, () => {
-    console.log('✓ WebSocket connected');
+    logger.debug('WebSocket connected');
     isConnecting = false;
     connectionStore.markConnected();
     startHeartbeat();
   });
 
   socket.on(SOCKET_EVENTS.DISCONNECT, (reason) => {
-    console.log('✗ WebSocket disconnected:', reason);
+    logger.debug('WebSocket disconnected:', reason);
     isConnecting = false;
     connectionStore.markDisconnected();
     stopHeartbeat();
@@ -180,29 +181,50 @@ export function connectSocket(token: string): Socket {
   });
 
   socket.on(SOCKET_EVENTS.CONNECT_ERROR, (error) => {
-    console.error('WebSocket connection error:', error.message);
+    logger.error('WebSocket connection error:', error.message);
     isConnecting = false;
     connectionStore.setError(error.message);
   });
 
   socket.on(SOCKET_EVENTS.RECONNECT_ATTEMPT, (attemptNumber) => {
-    console.log(`↻ Reconnection attempt ${attemptNumber}/${MAX_RECONNECTION_ATTEMPTS}`);
+    logger.debug(`Reconnection attempt ${attemptNumber}/${MAX_RECONNECTION_ATTEMPTS}`);
     connectionStore.setStatus('reconnecting');
     connectionStore.incrementReconnectAttempts();
   });
 
   socket.on(SOCKET_EVENTS.RECONNECT, (attemptNumber) => {
-    console.log(`✓ Reconnected after ${attemptNumber} attempts`);
+    logger.debug(`Reconnected after ${attemptNumber} attempts`);
     connectionStore.markConnected();
     startHeartbeat();
+
+    // Rejoin active conversation room after reconnect
+    (async () => {
+      try {
+        // Dynamic import avoids a hard circular dependency with chatStore -> socket
+        const mod = await import('@/stores/chatStore');
+        const chatState = mod.useChatStore.getState();
+        if (chatState.activeConversation) {
+          socket?.emit(SOCKET_EVENTS.CONVERSATION_JOIN, { conversation_id: chatState.activeConversation });
+        }
+        // Re-fetch conversations and process queued messages
+        chatState.fetchConversations();
+        chatState.processMessageQueue();
+        // Re-fetch active conversation messages
+        if (chatState.activeConversation) {
+          chatState.fetchMessages(chatState.activeConversation);
+        }
+      } catch (e) {
+        logger.error('Failed to rejoin rooms after reconnect:', e);
+      }
+    })();
   });
 
   socket.on(SOCKET_EVENTS.RECONNECT_ERROR, (error) => {
-    console.error('Reconnection error:', error.message);
+    logger.error('Reconnection error:', error.message);
   });
 
   socket.on(SOCKET_EVENTS.RECONNECT_FAILED, () => {
-    console.error('✗ Reconnection failed after maximum attempts');
+    logger.error('Reconnection failed after maximum attempts');
     connectionStore.setStatus('error');
     connectionStore.setError('Unable to reconnect. Please refresh the page.');
   });
@@ -212,7 +234,7 @@ export function connectSocket(token: string): Socket {
 
   // Generic error handler
   socket.on(SOCKET_EVENTS.ERROR, (error: { message: string }) => {
-    console.error('Socket error:', error.message);
+    logger.error('Socket error:', error.message);
   });
 
   return socket;

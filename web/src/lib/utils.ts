@@ -38,6 +38,21 @@ export function truncate(text: string, length: number): string {
   return text.slice(0, length) + '...';
 }
 
+// Shared avatar color palette
+export const avatarColors = [
+  'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
+  'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500',
+];
+
+/** Deterministic avatar color based on a name/id string */
+export function getAvatarColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return avatarColors[Math.abs(hash) % avatarColors.length];
+}
+
 export function formatLastMessage(content: string, length: number = 40): string {
   if (!content) return '';
 

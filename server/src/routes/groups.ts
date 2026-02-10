@@ -1,5 +1,4 @@
 import { Router, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import prisma from '../db/client';
 import { authenticate, AuthRequest } from '../middleware/auth';

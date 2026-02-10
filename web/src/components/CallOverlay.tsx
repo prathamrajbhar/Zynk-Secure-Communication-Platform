@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useCallStore } from '@/stores/callStore';
 import { cn, getInitials } from '@/lib/utils';
+import logger from '@/lib/logger';
 import {
   Phone, PhoneOff, Video, VideoOff, Mic, MicOff,
   PhoneIncoming, Volume2, Monitor, MonitorOff, Signal, SignalLow, SignalMedium, SignalHigh
@@ -53,14 +54,14 @@ export default function CallOverlay() {
       if (ringtone) {
         ringtone.loop = true;
         ringtone.volume = 0.5;
-        ringtone.play().catch(err => console.log('Ringtone play failed:', err));
+        ringtone.play().catch(err => logger.debug('Ringtone play failed:', err));
       }
     } else if (isInitiating && !isIncoming) {
       // Play ring-back tone for outgoing calls
       if (ringtone) {
         ringtone.loop = true;
         ringtone.volume = 0.3;
-        ringtone.play().catch(err => console.log('Ring-back play failed:', err));
+        ringtone.play().catch(err => logger.debug('Ring-back play failed:', err));
       }
     } else {
       // Stop ringtone when call connects or ends
@@ -83,7 +84,7 @@ export default function CallOverlay() {
     const video = localVideoRef.current;
     if (video && localStream) {
       video.srcObject = localStream;
-      video.play().catch(err => console.log('Local video play failed:', err));
+      video.play().catch(err => logger.debug('Local video play failed:', err));
     }
   }, [localStream]);
 
@@ -92,7 +93,7 @@ export default function CallOverlay() {
     const video = remoteVideoRef.current;
     if (video && remoteStream) {
       video.srcObject = remoteStream;
-      video.play().catch(err => console.log('Remote video play failed:', err));
+      video.play().catch(err => logger.debug('Remote video play failed:', err));
     }
   }, [remoteStream]);
 
@@ -101,7 +102,7 @@ export default function CallOverlay() {
     const audio = remoteAudioRef.current;
     if (audio && remoteStream) {
       audio.srcObject = remoteStream;
-      audio.play().catch(err => console.log('Remote audio play failed:', err));
+      audio.play().catch(err => logger.debug('Remote audio play failed:', err));
     }
   }, [remoteStream]);
 
@@ -110,7 +111,7 @@ export default function CallOverlay() {
     localVideoRef.current = element;
     if (element && localStream) {
       element.srcObject = localStream;
-      element.play().catch(err => console.log('Local video play failed:', err));
+      element.play().catch(err => logger.debug('Local video play failed:', err));
     }
   };
 
@@ -118,7 +119,7 @@ export default function CallOverlay() {
     remoteVideoRef.current = element;
     if (element && remoteStream) {
       element.srcObject = remoteStream;
-      element.play().catch(err => console.log('Remote video play failed:', err));
+      element.play().catch(err => logger.debug('Remote video play failed:', err));
     }
   };
 
@@ -126,7 +127,7 @@ export default function CallOverlay() {
     remoteAudioRef.current = element;
     if (element && remoteStream) {
       element.srcObject = remoteStream;
-      element.play().catch(err => console.log('Remote audio play failed:', err));
+      element.play().catch(err => logger.debug('Remote audio play failed:', err));
     }
   };
 

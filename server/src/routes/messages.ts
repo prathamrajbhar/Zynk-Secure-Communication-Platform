@@ -1,5 +1,4 @@
 import { Router, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import prisma from '../db/client';
 import { redis, isRedisAvailable } from '../db/redis';
@@ -192,10 +191,7 @@ router.route('/conversations')
       return res.status(500).json({ error: 'Failed to fetch conversations' });
     }
   })
-  .post(authenticate, (req: AuthRequest, res: Response, next: any) => {
-    console.log('[DEBUG] POST /conversations body:', JSON.stringify(req.body), 'headers.content-type:', req.headers['content-type']);
-    next();
-  }, validate(createConversationSchema), async (req: AuthRequest, res: Response) => {
+  .post(authenticate, validate(createConversationSchema), async (req: AuthRequest, res: Response) => {
     try {
       const { participant_id, recipient_id, user_id } = req.body;
       const targetUserId = participant_id || recipient_id || user_id;

@@ -2,35 +2,34 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, Conversation } from '@/stores/chatStore';
 import { useUIStore } from '@/stores/uiStore';
-import { formatTime, getInitials, formatLastMessage } from '@/lib/utils';
+import { formatTime, getInitials, formatLastMessage, getAvatarColor } from '@/lib/utils';
+import logger from '@/lib/logger';
 import {
   MessageCircle, Search, Settings, Plus, Users, LogOut,
   Moon, Sun, MoreVertical, X, File as FileIcon, Image as ImageIcon,
-  MessageSquare
+  MessageSquare, Pin, BellOff, Archive,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import CallLogsPanel from './CallLogsPanel';
 import ContactsPanel from './ContactsPanel';
+import ChatContextMenu from './ChatContextMenu';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import Fuse from 'fuse.js';
 
-const avatarColors = [
-  'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
-  'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500',
-];
-function getAvatarColor(name: string) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
-  return avatarColors[Math.abs(h) % avatarColors.length];
-}
-
 export default function Sidebar() {
   const { user, logout } = useAuthStore();
-  const { conversations, activeConversation, setActiveConversation, onlineUsers } = useChatStore();
+  const { conversations, activeConversation, setActiveConversation, onlineUsers,
+    pinnedChats, mutedChats, archivedChats,
+    togglePinChat, toggleMuteChat, toggleArchiveChat,
+    markConversationRead, markConversationUnread, deleteConversation, clearChatHistory,
+  } = useChatStore();
   const { theme, toggleTheme, setShowSettings, setShowNewChat, setShowGroupCreate, setShowProfile, sidebarTab, setSidebarTab } = useUIStore();
   const [search, setSearch] = useState('');
   const [showMenu, setShowMenu] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [chatContextMenu, setChatContextMenu] = useState<{ conversation: Conversation; x: number; y: number } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'clear'; convId: string; convName: string } | null>(null);
   const [searchPeople, setSearchPeople] = useState<{ user_id: string; username: string; display_name?: string; bio?: string }[]>([]);
   const [searchGlobalMessages, setSearchGlobalMessages] = useState<{ message_id: string; conversation_id: string; snippet: string; message_type: string; sender_username: string; sender_display_name?: string; created_at: string }[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -43,9 +42,54 @@ export default function Sidebar() {
   }), [conversations]);
 
   const filteredConversations = useMemo(() => {
-    if (!search) return conversations;
-    return fuseConversations.search(search).map(result => result.item);
-  }, [search, conversations, fuseConversations]);
+    let result = search ? fuseConversations.search(search).map(result => result.item) : conversations;
+
+    // Filter out archived unless explicitly showing
+    if (!showArchived) {
+      result = result.filter(c => !archivedChats.has(c.id));
+    } else {
+      result = result.filter(c => archivedChats.has(c.id));
+    }
+
+    // Sort: pinned first, then by last message time
+    result = [...result].sort((a, b) => {
+      const aPinned = pinnedChats.has(a.id) ? 1 : 0;
+      const bPinned = pinnedChats.has(b.id) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+      const aTime = a.last_message_at || a.updated_at;
+      const bTime = b.last_message_at || b.updated_at;
+      return new Date(bTime).getTime() - new Date(aTime).getTime();
+    });
+
+    return result;
+  }, [search, conversations, fuseConversations, pinnedChats, archivedChats, showArchived]);
+
+  const archivedCount = useMemo(() => conversations.filter(c => archivedChats.has(c.id)).length, [conversations, archivedChats]);
+
+  const handleChatContextMenu = (e: React.MouseEvent, conv: Conversation) => {
+    e.preventDefault();
+    setChatContextMenu({ conversation: conv, x: e.clientX, y: e.clientY });
+  };
+
+  const handleDeleteChat = (convId: string, convName: string) => {
+    setConfirmAction({ type: 'delete', convId, convName });
+  };
+
+  const handleClearHistory = (convId: string, convName: string) => {
+    setConfirmAction({ type: 'clear', convId, convName });
+  };
+
+  const confirmActionHandler = () => {
+    if (!confirmAction) return;
+    if (confirmAction.type === 'delete') {
+      deleteConversation(confirmAction.convId);
+      toast.success('Chat deleted');
+    } else {
+      clearChatHistory(confirmAction.convId);
+      toast.success('Chat history cleared');
+    }
+    setConfirmAction(null);
+  };
 
   useEffect(() => {
     if (!search || search.length < 2) { setSearchPeople([]); setSearchGlobalMessages([]); return; }
@@ -60,7 +104,7 @@ export default function Sidebar() {
         const existingUserIds = new Set(conversations.map(c => c.other_user?.user_id).filter(Boolean));
         setSearchPeople((peopleRes.data.users || []).filter((u: { user_id: string }) => !existingUserIds.has(u.user_id)));
         setSearchGlobalMessages(messagesRes.data.results || []);
-      } catch (error) { console.error('Search failed:', error); }
+      } catch (error) { logger.error('Search failed:', error); }
       finally { setIsSearching(false); }
     }, 400);
     return () => { if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
@@ -72,7 +116,7 @@ export default function Sidebar() {
   const handleStartConversation = async (userId: string) => {
     // Defensive validation - prevent empty body requests
     if (!userId || typeof userId !== 'string' || userId.trim() === '') {
-      console.error('[Sidebar.handleStartConversation] Invalid userId:', userId);
+      logger.error('[Sidebar.handleStartConversation] Invalid userId:', userId);
       toast.error('Invalid user selected');
       return;
     }
@@ -199,9 +243,31 @@ export default function Sidebar() {
                     <ConversationItem key={conv.id} conversation={conv}
                       isActive={activeConversation === conv.id}
                       isOnline={conv.other_user ? onlineUsers.has(conv.other_user.user_id) : false}
-                      onClick={() => { setActiveConversation(conv.id); setSearch(''); }} />
+                      isPinned={pinnedChats.has(conv.id)}
+                      isMuted={mutedChats.has(conv.id)}
+                      onClick={() => { setActiveConversation(conv.id); setSearch(''); }}
+                      onContextMenu={(e) => handleChatContextMenu(e, conv)} />
                   ))}
                 </>
+              )}
+              {/* Archived chats button */}
+              {!search && !showArchived && archivedCount > 0 && (
+                <button onClick={() => setShowArchived(true)}
+                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-colors text-left">
+                  <div className="w-10 h-10 rounded-full bg-[var(--bg-wash)] flex items-center justify-center">
+                    <Archive className="w-4 h-4 text-[var(--text-muted)]" />
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-sm font-semibold text-[var(--text-secondary)]">Archived</span>
+                    <span className="ml-2 text-xs text-[var(--text-muted)]">{archivedCount}</span>
+                  </div>
+                </button>
+              )}
+              {showArchived && (
+                <button onClick={() => setShowArchived(false)}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--hover)] transition-colors">
+                  ← Back to chats
+                </button>
               )}
               {/* People */}
               {searchPeople.length > 0 && (
@@ -275,6 +341,69 @@ export default function Sidebar() {
         <CallLogsPanel />
       )}
 
+      {/* ── Chat Context Menu ── */}
+      {chatContextMenu && (
+        <ChatContextMenu
+          x={chatContextMenu.x}
+          y={chatContextMenu.y}
+          isPinned={pinnedChats.has(chatContextMenu.conversation.id)}
+          isMuted={mutedChats.has(chatContextMenu.conversation.id)}
+          isArchived={archivedChats.has(chatContextMenu.conversation.id)}
+          unreadCount={chatContextMenu.conversation.unread_count || 0}
+          onClose={() => setChatContextMenu(null)}
+          onPin={() => { togglePinChat(chatContextMenu.conversation.id); toast.success(pinnedChats.has(chatContextMenu.conversation.id) ? 'Unpinned' : 'Pinned'); }}
+          onMute={() => { toggleMuteChat(chatContextMenu.conversation.id); toast.success(mutedChats.has(chatContextMenu.conversation.id) ? 'Unmuted' : 'Muted'); }}
+          onArchive={() => { toggleArchiveChat(chatContextMenu.conversation.id); toast.success(archivedChats.has(chatContextMenu.conversation.id) ? 'Unarchived' : 'Archived'); }}
+          onMarkReadUnread={() => {
+            const conv = chatContextMenu.conversation;
+            if (conv.unread_count > 0) {
+              markConversationRead(conv.id);
+              toast.success('Marked as read');
+            } else {
+              markConversationUnread(conv.id);
+              toast.success('Marked as unread');
+            }
+          }}
+          onDeleteChat={() => {
+            const conv = chatContextMenu.conversation;
+            const name = conv.type === 'one_to_one' ? (conv.other_user?.display_name || conv.other_user?.username || 'Unknown') : (conv.group_info?.name || 'Group');
+            handleDeleteChat(conv.id, name);
+          }}
+          onClearHistory={() => {
+            const conv = chatContextMenu.conversation;
+            const name = conv.type === 'one_to_one' ? (conv.other_user?.display_name || conv.other_user?.username || 'Unknown') : (conv.group_info?.name || 'Group');
+            handleClearHistory(conv.id, name);
+          }}
+        />
+      )}
+
+      {/* ── Confirm Action Dialog ── */}
+      {confirmAction && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 animate-fade-in" onClick={() => setConfirmAction(null)}>
+          <div className="bg-[var(--bg-surface)] rounded-2xl w-full max-w-sm p-6 shadow-overlay border border-[var(--border)] animate-scale-in mx-4"
+            onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-[var(--text-primary)] mb-2">
+              {confirmAction.type === 'delete' ? 'Delete chat?' : 'Clear chat history?'}
+            </h3>
+            <p className="text-sm text-[var(--text-muted)] mb-5">
+              {confirmAction.type === 'delete'
+                ? `Delete your chat with "${confirmAction.convName}"? This cannot be undone.`
+                : `Clear all messages in "${confirmAction.convName}"? This cannot be undone.`}
+            </p>
+            <div className="flex items-center gap-2 justify-end">
+              <button onClick={() => setConfirmAction(null)}
+                className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] rounded-xl hover:bg-[var(--hover)] transition-colors">
+                Cancel
+              </button>
+              <button onClick={confirmActionHandler}
+                className="px-4 py-2 text-sm font-semibold text-white bg-[var(--danger)] rounded-xl hover:brightness-110 transition-all active:scale-[0.98]">
+                {confirmAction.type === 'delete' ? 'Delete' : 'Clear'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── FAB ── */}
       {sidebarTab === 'chats' && (
         <div className="absolute bottom-5 right-4 z-20 animate-fab">
@@ -316,8 +445,10 @@ function EmptySearch({ isSearching }: { isSearching: boolean }) {
   );
 }
 
-function ConversationItem({ conversation, isActive, isOnline, onClick }: {
-  conversation: Conversation; isActive: boolean; isOnline: boolean; onClick: () => void;
+function ConversationItem({ conversation, isActive, isOnline, isPinned, isMuted, onClick, onContextMenu }: {
+  conversation: Conversation; isActive: boolean; isOnline: boolean;
+  isPinned: boolean; isMuted: boolean;
+  onClick: () => void; onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const name = conversation.type === 'one_to_one'
     ? (conversation.other_user?.display_name || conversation.other_user?.username || 'Unknown')
@@ -328,7 +459,7 @@ function ConversationItem({ conversation, isActive, isOnline, onClick }: {
   const color = conversation.type === 'group' ? 'bg-violet-500' : getAvatarColor(name);
 
   return (
-    <button onClick={onClick} className={cn(
+    <button onClick={onClick} onContextMenu={onContextMenu} className={cn(
       'conv-item w-full flex items-center gap-3 px-4 py-3 text-left transition-all duration-150',
       isActive && 'active'
     )}>
@@ -345,9 +476,13 @@ function ConversationItem({ conversation, isActive, isOnline, onClick }: {
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
-          <span className={cn('text-[13.5px] truncate', hasUnread ? 'font-bold text-[var(--text-primary)]' : 'font-semibold text-[var(--text-primary)]')}>
-            {name}
-          </span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className={cn('text-[13.5px] truncate', hasUnread ? 'font-bold text-[var(--text-primary)]' : 'font-semibold text-[var(--text-primary)]')}>
+              {name}
+            </span>
+            {isPinned && <Pin className="w-3 h-3 text-[var(--text-muted)] flex-shrink-0" />}
+            {isMuted && <BellOff className="w-3 h-3 text-[var(--text-muted)] flex-shrink-0" />}
+          </div>
           <span className={cn('text-[11px] whitespace-nowrap flex-shrink-0', hasUnread ? 'text-[var(--accent)] font-bold' : 'text-[var(--text-muted)]')}>
             {time}
           </span>

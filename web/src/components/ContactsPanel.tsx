@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useChatStore } from '@/stores/chatStore';
-import { getInitials, cn, formatTime } from '@/lib/utils';
+import { getInitials, cn, formatTime, getAvatarColor } from '@/lib/utils';
 import {
   Users, Search, Loader2, X, Trash2,
   MessageCircle, MoreVertical, Ban
@@ -20,16 +20,6 @@ interface Contact {
   avatar_url: string | null;
   bio: string | null;
   last_seen_at: string | null;
-}
-
-const avatarColors = [
-  'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
-  'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500',
-];
-function getAvatarColor(name: string) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
-  return avatarColors[Math.abs(h) % avatarColors.length];
 }
 
 export default function ContactsPanel() {

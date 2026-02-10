@@ -50,12 +50,12 @@ app.use(helmet({
   },
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   noSniff: true,
-  xssFilter: true,
 }));
 
 // Simplified security headers (Helmet already sets most of these)
 app.use((req, res, next) => {
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // Allow camera and microphone for WebRTC voice/video calls
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
   // Prevent caching of API responses containing sensitive data
   if (req.path.startsWith('/api/')) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
