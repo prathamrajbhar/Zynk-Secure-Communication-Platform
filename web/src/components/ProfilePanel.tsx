@@ -5,10 +5,8 @@ import { useUIStore } from '@/stores/uiStore';
 import { useAuthStore } from '@/stores/authStore';
 import { X, Camera, Loader2, AtSign } from 'lucide-react';
 import { getInitials, cn, getAvatarColor } from '@/lib/utils';
-import api from '@/lib/api';
+import api, { API_URL } from '@/lib/api';
 import toast from 'react-hot-toast';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 export default function ProfilePanel() {
   const { showProfile, setShowProfile } = useUIStore();
@@ -24,7 +22,15 @@ export default function ProfilePanel() {
     if (showProfile && user) {
       setDisplayName(user.display_name || '');
       setBio(user.bio || '');
-      setAvatarPreview(user.avatar_url || null);
+      // If avatar_url is an API endpoint, fetch it as blob for display
+      if (user.avatar_url && user.avatar_url.includes('/files/')) {
+        const fileEndpoint = user.avatar_url.replace(API_URL, '');
+        api.get(fileEndpoint, { responseType: 'blob', timeout: 60000 })
+          .then(res => setAvatarPreview(URL.createObjectURL(res.data)))
+          .catch(() => setAvatarPreview(null));
+      } else {
+        setAvatarPreview(user.avatar_url || null);
+      }
     }
   }, [showProfile, user]);
 
@@ -43,9 +49,14 @@ export default function ProfilePanel() {
       const formData = new FormData();
       formData.append('file', file);
       const res = await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
-      const avatarUrl = `${API_URL}/files/${res.data.file_id}/download`;
+      const fileId = res.data.file_id;
+      // Build authenticated blob URL for avatar display (img tags can't send Bearer tokens)
+      const blobRes = await api.get(`/files/${fileId}/download`, { responseType: 'blob', timeout: 60000 });
+      const blobUrl = URL.createObjectURL(blobRes.data);
+      // Store the API path as avatar_url (other components use AuthImage or blob fetching)
+      const avatarUrl = `${API_URL}/files/${fileId}/download`;
       await updateProfile({ avatar_url: avatarUrl });
-      setAvatarPreview(avatarUrl);
+      setAvatarPreview(blobUrl);
       toast.success('Avatar updated');
     } catch {
       setAvatarPreview(user?.avatar_url || null);

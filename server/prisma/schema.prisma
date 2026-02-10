@@ -51,6 +51,7 @@ enum MessageType {
   video
   location
   contact
+  poll
 }
 
 /// Message delivery status — tracks sent → delivered → read lifecycle
@@ -113,6 +114,11 @@ model User {
   identityKeys       IdentityKey[]
   signedPreKeys      SignedPreKey[]
   preKeys            PreKey[]
+  pollsCreated       Poll[]            @relation("PollsCreated")
+  pollVotes          PollVote[]
+  messagesDeletedFor MessageDeletedFor[]
+  senderKeysCreated  GroupSenderKey[]  @relation("SenderKeysCreated")
+  senderKeysReceived GroupSenderKey[]  @relation("SenderKeysReceived")
 
   @@map("users")
   @@index([username], map: "idx_users_username")
@@ -196,11 +202,13 @@ model Conversation {
   created_at      DateTime           @default(now()) @db.Timestamp(6)
   updated_at      DateTime           @default(now()) @db.Timestamp(6)
 
-  participants ConversationParticipant[]
-  messages     Messages[]
-  group        Group?
-  files        File[]
-  calls        Call[]
+  participants    ConversationParticipant[]
+  messages        Messages[]
+  group           Group?
+  files           File[]
+  calls           Call[]
+  polls           Poll[]
+  groupSenderKeys GroupSenderKey[]
 
   @@map("conversations")
   @@index([type], map: "idx_conversations_type")
@@ -242,8 +250,9 @@ model Messages {
   edited_at         DateTime?     @db.Timestamp(6)
   deleted_at        DateTime?     @db.Timestamp(6) // Soft delete
 
-  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  sender       User         @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  conversation Conversation          @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender       User                  @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  deletedFor   MessageDeletedFor[]   // Per-user deletions
 
   @@map("messages")
   @@index([conversation_id, created_at(sort: Desc)], map: "idx_messages_conversation")
@@ -443,4 +452,93 @@ model PreKey {
   @@unique([user_id, device_id, key_id])
   @@map("pre_keys")
   @@index([user_id, device_id, used], map: "idx_pre_keys_user_device_used")
+}
+
+// ======================== Polls ========================
+
+/// Poll — polls within conversations
+/// Used in: messages (poll creation, voting, results)
+model Poll {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversation_id String   @db.Uuid
+  creator_id      String   @db.Uuid
+  question        String   @db.VarChar(500)
+  allow_multiple  Boolean  @default(false)
+  is_anonymous    Boolean  @default(false)
+  closes_at       DateTime? @db.Timestamp(6)
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  creator      User         @relation("PollsCreated", fields: [creator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  options      PollOption[]
+
+  @@map("polls")
+  @@index([conversation_id], map: "idx_polls_conversation")
+}
+
+/// Poll option — individual choices within a poll
+model PollOption {
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  poll_id String @db.Uuid
+  text    String @db.VarChar(200)
+
+  poll  Poll       @relation(fields: [poll_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  votes PollVote[]
+
+  @@map("poll_options")
+  @@index([poll_id], map: "idx_poll_options_poll")
+}
+
+// ======================== Group E2EE Sender Keys ========================
+
+/// Sender key distribution — encrypted sender key shared with each group member
+/// Each group member generates an AES-256 sender key and distributes it to
+/// every other member, encrypted via their pairwise ECDH channel.
+/// Used in: keys (distribute, fetch), websocket (real-time distribution)
+model GroupSenderKey {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversation_id String   @db.Uuid
+  sender_id       String   @db.Uuid
+  recipient_id    String   @db.Uuid
+  key_id          Int      // Incrementing version — bumped on key rotation
+  encrypted_key   String   // Sender's AES-256 key encrypted via 1:1 ECDH with recipient
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender       User         @relation("SenderKeysCreated", fields: [sender_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recipient    User         @relation("SenderKeysReceived", fields: [recipient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([conversation_id, sender_id, recipient_id, key_id])
+  @@map("group_sender_keys")
+  @@index([conversation_id, recipient_id], map: "idx_group_sender_keys_conv_recipient")
+  @@index([conversation_id, sender_id], map: "idx_group_sender_keys_conv_sender")
+}
+
+/// Poll vote — records a user's vote on a poll option
+model PollVote {
+  option_id String   @db.Uuid
+  user_id   String   @db.Uuid
+  voted_at  DateTime @default(now()) @db.Timestamp(6)
+
+  option PollOption @relation(fields: [option_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user   User       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([option_id, user_id])
+  @@map("poll_votes")
+  @@index([user_id], map: "idx_poll_votes_user")
+}
+
+/// Message deletion — tracks per-user message deletions ("delete for me")
+/// Global "delete for everyone" uses Messages.deleted_at instead
+model MessageDeletedFor {
+  message_id String   @db.Uuid
+  user_id    String   @db.Uuid
+  deleted_at DateTime @default(now()) @db.Timestamp(6)
+
+  message Messages @relation(fields: [message_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user    User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([message_id, user_id])
+  @@map("message_deleted_for")
+  @@index([user_id], map: "idx_message_deleted_for_user")
 }

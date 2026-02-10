@@ -32,7 +32,12 @@ async function getUserConversations(userId: string) {
         select: { last_read_at: true }
       },
       messages: {
-        where: { deleted_at: null },
+        where: {
+          deleted_at: null,
+          deletedFor: {
+            none: { user_id: userId }
+          }
+        },
         orderBy: { created_at: 'desc' },
         take: 1
       },
@@ -61,7 +66,10 @@ async function getUserConversations(userId: string) {
       conversation_id: { in: convIds },
       sender_id: { not: userId },
       status: { not: 'read' },
-      deleted_at: null
+      deleted_at: null,
+      deletedFor: {
+        none: { user_id: userId }
+      }
     },
     _count: { id: true }
   });
@@ -69,7 +77,9 @@ async function getUserConversations(userId: string) {
   // Create lookup map for unread counts
   const unreadCountMap = new Map<string, number>();
   unreadCountsRaw.forEach(item => {
-    unreadCountMap.set(item.conversation_id, item._count.id);
+    if (item._count && typeof item._count !== 'boolean') {
+      unreadCountMap.set(item.conversation_id, item._count.id || 0);
+    }
   });
 
   // Step 3: Batch fetch OTHER participants for one-to-one conversations in ONE query
@@ -126,8 +136,8 @@ async function getUserConversations(userId: string) {
 
   // Step 5: Build final formatted conversations (no async operations inside loop!)
   const formattedConversations = conversations.map(c => {
-    const lastReadAt = c.participants[0]?.last_read_at || new Date(0);
-    const lastMessage = c.messages[0];
+    const lastReadAt = (c as any).participants[0]?.last_read_at || new Date(0);
+    const lastMessage = (c as any).messages[0];
     const unreadCount = unreadCountMap.get(c.id) || 0;
 
     let otherUser = null;
@@ -158,10 +168,10 @@ async function getUserConversations(userId: string) {
       last_message_sender_id: lastMessage?.sender_id,
       other_user: otherUser,
       is_online: isOnline,
-      group_info: c.group ? {
-        group_id: c.group.id,
-        name: c.group.name,
-        avatar_url: c.group.avatar_url
+      group_info: (c as any).group ? {
+        group_id: (c as any).group.id,
+        name: (c as any).group.name,
+        avatar_url: (c as any).group.avatar_url
       } : null
     };
   });
@@ -247,6 +257,108 @@ router.get('/conversations/list', authenticate, async (req: AuthRequest, res: Re
   }
 });
 
+// DELETE /messages/conversations/:conversationId — Delete (leave) a conversation for the current user
+router.delete('/conversations/:conversationId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.userId!;
+
+    // Verify participation
+    const participant = await prisma.conversationParticipant.findUnique({
+      where: {
+        conversation_id_user_id: {
+          conversation_id: conversationId,
+          user_id: userId,
+        },
+      },
+    });
+
+    if (!participant) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Mark all messages in this conversation as deleted-for-me
+      //    Get all message IDs in the conversation that aren't already deleted for this user
+      const messages = await tx.messages.findMany({
+        where: {
+          conversation_id: conversationId,
+          deleted_at: null,
+          deletedFor: { none: { user_id: userId } },
+        },
+        select: { id: true },
+      });
+
+      if (messages.length > 0) {
+        await tx.messageDeletedFor.createMany({
+          data: messages.map((m) => ({ message_id: m.id, user_id: userId })),
+          skipDuplicates: true,
+        });
+      }
+
+      // 2. Remove the participant from the conversation
+      //    This hides the conversation from their list
+      await tx.conversationParticipant.delete({
+        where: {
+          conversation_id_user_id: {
+            conversation_id: conversationId,
+            user_id: userId,
+          },
+        },
+      });
+    });
+
+    return res.status(204).send();
+  } catch (error) {
+    console.error('Delete conversation error:', error);
+    return res.status(500).json({ error: 'Failed to delete conversation' });
+  }
+});
+
+// PUT /messages/conversations/:conversationId/clear — Clear chat history (mark all msgs deleted-for-me, keep participant)
+router.put('/conversations/:conversationId/clear', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.userId!;
+
+    // Verify participation
+    const participant = await prisma.conversationParticipant.findUnique({
+      where: {
+        conversation_id_user_id: {
+          conversation_id: conversationId,
+          user_id: userId,
+        },
+      },
+    });
+
+    if (!participant) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    // Mark all messages as deleted-for-me
+    const messages = await prisma.messages.findMany({
+      where: {
+        conversation_id: conversationId,
+        deleted_at: null,
+        deletedFor: { none: { user_id: userId } },
+      },
+      select: { id: true },
+    });
+
+    if (messages.length > 0) {
+      await prisma.messageDeletedFor.createMany({
+        data: messages.map((m) => ({ message_id: m.id, user_id: userId })),
+        skipDuplicates: true,
+      });
+    }
+
+    return res.status(204).send();
+  } catch (error) {
+    console.error('Clear chat history error:', error);
+    return res.status(500).json({ error: 'Failed to clear chat history' });
+  }
+});
+
 // PUT /messages/conversations/:conversationId/read-all
 router.put('/conversations/:conversationId/read-all', authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -305,6 +417,9 @@ router.post('/search', authenticate, async (req: AuthRequest, res: Response) => 
 
     const where: any = {
       deleted_at: null,
+      deletedFor: {
+        none: { user_id: req.userId! }
+      },
       conversation: {
         participants: {
           some: { user_id: req.userId! }
@@ -481,6 +596,9 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
       where: {
         conversation_id: conversationId,
         deleted_at: null,
+        deletedFor: {
+          none: { user_id: req.userId! }
+        },
         ...(before ? { created_at: { lt: new Date(parseInt(before) * 1000) } } : {})
       },
       include: {
@@ -511,9 +629,9 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
       status: m.status,
       created_at: m.created_at,
       edited_at: m.edited_at,
-      sender_username: m.sender.username,
-      sender_display_name: m.sender.profile?.display_name,
-      sender_avatar: m.sender.profile?.avatar_url
+      sender_username: (m as any).sender.username,
+      sender_display_name: (m as any).sender.profile?.display_name,
+      sender_avatar: (m as any).sender.profile?.avatar_url
     })).reverse();
 
     return res.json({ messages: resultMessages, has_more: hasMore });
@@ -539,20 +657,24 @@ router.delete('/:messageId', authenticate, async (req: AuthRequest, res: Respons
         }
       });
     } else {
-      // Delete for me: any participant can hide a message from their own view
-      // Verify user is a participant in the message's conversation
+      // Delete for me: track in MessageDeletedFor table (per-user deletion)
       const message = await prisma.messages.findUnique({
         where: { id: messageId },
         select: { conversation_id: true }
       });
+      
       if (message) {
+        // Verify user is a participant in the message's conversation
         const isParticipant = await prisma.conversationParticipant.findFirst({
           where: { conversation_id: message.conversation_id, user_id: req.userId! }
         });
+        
         if (isParticipant) {
-          await prisma.messages.update({
-            where: { id: messageId },
-            data: { deleted_at: new Date() }
+          // Insert into MessageDeletedFor (upsert in case already deleted)
+          await prisma.messageDeletedFor.upsert({
+            where: { message_id_user_id: { message_id: messageId, user_id: req.userId! } },
+            create: { message_id: messageId, user_id: req.userId! },
+            update: { deleted_at: new Date() }
           });
         }
       }
@@ -632,6 +754,76 @@ router.put('/:messageId/read', authenticate, async (req: AuthRequest, res: Respo
     return res.status(204).send();
   } catch (error) {
     return res.status(500).json({ error: 'Failed to mark as read' });
+  }
+});
+
+// POST /messages/:messageId/react — Add or remove a reaction on a message
+router.post('/:messageId/react', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { messageId } = req.params;
+    const { emoji } = req.body;
+
+    if (!emoji || typeof emoji !== 'string' || emoji.length > 8) {
+      return res.status(400).json({ error: 'Invalid emoji' });
+    }
+
+    // Verify user is a participant in the message's conversation
+    const message = await prisma.messages.findUnique({
+      where: { id: messageId },
+      select: { conversation_id: true, metadata: true }
+    });
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    const isParticipant = await prisma.conversationParticipant.findFirst({
+      where: { conversation_id: message.conversation_id, user_id: req.userId! }
+    });
+    if (!isParticipant) {
+      return res.status(403).json({ error: 'Not a participant' });
+    }
+
+    // Toggle reaction in metadata.reactions
+    const meta = (message.metadata as Record<string, unknown>) || {};
+    const reactions: Record<string, string[]> = (meta.reactions as Record<string, string[]>) || {};
+
+    if (!reactions[emoji]) {
+      reactions[emoji] = [];
+    }
+
+    const userIndex = reactions[emoji].indexOf(req.userId!);
+    let action: 'added' | 'removed';
+
+    if (userIndex >= 0) {
+      // Remove reaction
+      reactions[emoji].splice(userIndex, 1);
+      if (reactions[emoji].length === 0) {
+        delete reactions[emoji];
+      }
+      action = 'removed';
+    } else {
+      // Add reaction
+      reactions[emoji].push(req.userId!);
+      action = 'added';
+    }
+
+    const updatedMetadata = { ...meta, reactions };
+
+    await prisma.messages.update({
+      where: { id: messageId },
+      data: { metadata: updatedMetadata }
+    });
+
+    return res.json({
+      message_id: messageId,
+      emoji,
+      action,
+      reactions,
+    });
+  } catch (error) {
+    console.error('React error:', error);
+    return res.status(500).json({ error: 'Failed to react' });
   }
 });
 

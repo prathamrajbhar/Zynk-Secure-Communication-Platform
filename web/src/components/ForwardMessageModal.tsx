@@ -2,7 +2,6 @@
 
 import { useState, useMemo } from 'react';
 import { useChatStore, Conversation, Message } from '@/stores/chatStore';
-import { useAuthStore } from '@/stores/authStore';
 import { cn, getInitials, getAvatarColor } from '@/lib/utils';
 import { X, Search, Send, Users, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -15,7 +14,6 @@ interface ForwardMessageModalProps {
 }
 
 export default function ForwardMessageModal({ isOpen, messages, onClose }: ForwardMessageModalProps) {
-  const { user } = useAuthStore();
   const { conversations, sendMessageOptimistic } = useChatStore();
   const [search, setSearch] = useState('');
   const [selectedConvs, setSelectedConvs] = useState<string[]>([]);
@@ -46,7 +44,8 @@ export default function ForwardMessageModal({ isOpen, messages, onClose }: Forwa
     try {
       for (const convId of selectedConvs) {
         for (const msg of messages) {
-          const content = msg.content || msg.encrypted_content || '';
+          const content = msg.content || '';
+          if (!content) continue; // Skip messages that couldn't be decrypted
           const prefix = messages.length > 1 ? '' : '↪ Forwarded:\n';
           const forwardContent = `${prefix}${content}`;
           sendMessageOptimistic(convId, forwardContent, msg.message_type);

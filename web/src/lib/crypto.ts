@@ -233,3 +233,146 @@ export async function buildKeyUploadPayload(publicKeyB64: string) {
     pre_keys: preKeys,
   };
 }
+
+// ========== Group E2EE — Sender Keys (Simplified) ==========
+//
+// Group encryption strategy:
+//  1. Each group member generates a "sender key" (AES-256 symmetric key)
+//  2. The sender key is encrypted to each member individually (using 1:1 ECDH)
+//  3. Group messages are encrypted with the sender's sender key
+//  4. All members decrypt using the sender's distributed key
+//
+// Key rotation: sender key regenerated when members change or periodically.
+
+export interface GroupSenderKey {
+  key: string;        // base64 AES key (raw exported)
+  keyId: number;      // incremented on rotation
+  createdAt: number;  // timestamp
+}
+
+/**
+ * Generate a random AES-256-GCM sender key for group encryption.
+ */
+export async function generateSenderKey(): Promise<{ key: string; cryptoKey: CryptoKey }> {
+  const aesKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt'],
+  );
+  const raw = await crypto.subtle.exportKey('raw', aesKey);
+  return { key: arrayBufferToBase64(raw), cryptoKey: aesKey };
+}
+
+/**
+ * Import a base64-encoded AES key.
+ */
+export async function importSenderKey(keyB64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'raw',
+    base64ToArrayBuffer(keyB64),
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/**
+ * Encrypt plaintext using a sender key (AES-256-GCM).
+ * Returns an envelope JSON string with version flag for group messages.
+ */
+export async function encryptWithSenderKey(
+  senderKey: CryptoKey,
+  plaintext: string,
+  keyId: number,
+  senderPublicKey: string,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    senderKey,
+    new TextEncoder().encode(plaintext),
+  );
+  return JSON.stringify({
+    v: 4,             // v4 = group sender key envelope
+    ct: arrayBufferToBase64(ct),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+    sk: senderPublicKey,
+    kid: keyId,       // sender key ID for key lookup
+  });
+}
+
+/**
+ * Decrypt a v4 group message using the sender's sender key.
+ */
+export async function decryptWithSenderKey(
+  senderKey: CryptoKey,
+  envelopeJson: string,
+): Promise<string> {
+  const env = JSON.parse(envelopeJson);
+  if (env.v !== 4 || !env.ct || !env.iv) throw new Error('Not a v4 group envelope');
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToArrayBuffer(env.iv) },
+    senderKey,
+    base64ToArrayBuffer(env.ct),
+  );
+  return new TextDecoder().decode(pt);
+}
+
+/**
+ * Check if a message is a v4 group-encrypted envelope.
+ */
+export function isGroupEncryptedMessage(s: string): boolean {
+  if (!s || typeof s !== 'string') return false;
+  try {
+    const obj = JSON.parse(s.trim());
+    return obj.v === 4 && !!obj.ct && !!obj.iv && typeof obj.kid === 'number';
+  } catch { return false; }
+}
+
+/**
+ * Check if a string is any kind of encrypted envelope (v3 or v4).
+ */
+export function isEncryptedMessage(s: string): boolean {
+  return isValidEncryptedMessage(s) || isGroupEncryptedMessage(s);
+}
+
+// ========== Sender Key Distribution Helpers ==========
+
+/**
+ * Encrypt a raw sender key (base64) for distribution to a specific recipient.
+ * Uses an existing ECDH-derived AES key shared between sender and recipient.
+ * Returns a compact JSON blob: { ct, iv }
+ */
+export async function encryptSenderKeyForDistribution(
+  senderKeyB64: string,
+  sharedAesKey: CryptoKey,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    sharedAesKey,
+    base64ToArrayBuffer(senderKeyB64),
+  );
+  return JSON.stringify({
+    ct: arrayBufferToBase64(ct),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+  });
+}
+
+/**
+ * Decrypt a received encrypted sender key distribution blob.
+ * Returns the raw sender key as base64.
+ */
+export async function decryptSenderKeyDistribution(
+  encryptedBlob: string,
+  sharedAesKey: CryptoKey,
+): Promise<string> {
+  const { ct, iv } = JSON.parse(encryptedBlob);
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToArrayBuffer(iv) },
+    sharedAesKey,
+    base64ToArrayBuffer(ct),
+  );
+  return arrayBufferToBase64(plain);
+}
+

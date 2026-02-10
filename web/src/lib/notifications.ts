@@ -6,8 +6,7 @@
  */
 
 import logger from '@/lib/logger';
-
-let notificationSoundEnabled = true;
+import { useUIStore } from '@/stores/uiStore';
 
 // Preload notification sounds
 let messageSound: HTMLAudioElement | null = null;
@@ -35,7 +34,8 @@ if (typeof window !== 'undefined') {
  * Play notification sound for messages
  */
 export function playMessageSound(): void {
-  if (!notificationSoundEnabled || !messageSound) return;
+  const { messageSoundEnabled } = useUIStore.getState();
+  if (!messageSoundEnabled || !messageSound) return;
   messageSound.currentTime = 0;
   messageSound.play().catch(() => {});
 }
@@ -44,7 +44,8 @@ export function playMessageSound(): void {
  * Play/stop ringtone for incoming calls
  */
 export function playRingtone(): void {
-  if (!callSound) return;
+  const { callSoundEnabled } = useUIStore.getState();
+  if (!callSoundEnabled || !callSound) return;
   callSound.currentTime = 0;
   callSound.play().catch(() => {});
 }
@@ -53,13 +54,6 @@ export function stopRingtone(): void {
   if (!callSound) return;
   callSound.pause();
   callSound.currentTime = 0;
-}
-
-/**
- * Toggle notification sounds
- */
-export function setNotificationSoundEnabled(enabled: boolean): void {
-  notificationSoundEnabled = enabled;
 }
 
 /**

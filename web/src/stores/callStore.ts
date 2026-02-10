@@ -13,6 +13,7 @@ interface CallState {
     status: 'initiating' | 'ringing' | 'connecting' | 'in_progress' | 'ended';
     isIncoming: boolean;
     sdpOffer?: string;
+    startedAt?: string;
   } | null;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
@@ -274,7 +275,7 @@ export const useCallStore = create<CallState>((set, get) => ({
           clearCallTimeout();
           iceRestartAttempts = 0;
           set(s => ({
-            activeCall: s.activeCall ? { ...s.activeCall, status: 'in_progress' } : null,
+            activeCall: s.activeCall ? { ...s.activeCall, status: 'in_progress', startedAt: s.activeCall.startedAt || new Date().toISOString() } : null,
           }));
           startConnectionQualityMonitor(pc, (partial) => set(partial as Partial<CallState>));
         } else if (state === 'failed') {
@@ -436,7 +437,7 @@ export const useCallStore = create<CallState>((set, get) => ({
         if (state === 'connected' || state === 'completed') {
           iceRestartAttempts = 0;
           set(s => ({
-            activeCall: s.activeCall ? { ...s.activeCall, status: 'in_progress' } : null,
+            activeCall: s.activeCall ? { ...s.activeCall, status: 'in_progress', startedAt: s.activeCall.startedAt || new Date().toISOString() } : null,
           }));
           startConnectionQualityMonitor(pc, (partial) => set(partial as Partial<CallState>));
         } else if (state === 'failed') {

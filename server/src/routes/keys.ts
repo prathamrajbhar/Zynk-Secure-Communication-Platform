@@ -307,4 +307,228 @@ router.get('/:userId/identity', authenticate, async (req: AuthRequest, res: Resp
   }
 });
 
+// ========== Group E2EE — Sender Key Distribution ==========
+
+const distributeKeySchema = z.object({
+  key_id: z.number().int().positive(),
+  distributions: z.array(z.object({
+    recipient_id: z.string().uuid(),
+    encrypted_key: z.string().min(1), // Sender key encrypted via 1:1 ECDH
+  })).min(1).max(256),
+});
+
+/**
+ * POST /keys/group/:conversationId/distribute
+ * Upload encrypted sender key distributions for all group members.
+ * Called when: group created, member added, key rotation.
+ */
+router.post('/group/:conversationId/distribute', authenticate, validate(distributeKeySchema), async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId } = req.params;
+    const { key_id, distributions } = req.body;
+    const userId = req.userId!;
+
+    // Verify user is a participant in this conversation
+    const participant = await prisma.conversationParticipant.findUnique({
+      where: { conversation_id_user_id: { conversation_id: conversationId, user_id: userId } },
+    });
+    if (!participant) {
+      return res.status(403).json({ error: 'Not a conversation participant' });
+    }
+
+    // Delete old distributions for this sender+key_id (rotation replaces old keys)
+    await prisma.groupSenderKey.deleteMany({
+      where: {
+        conversation_id: conversationId,
+        sender_id: userId,
+        key_id: { lt: key_id }, // Delete older versions only
+      },
+    });
+
+    // Batch insert new distributions
+    await prisma.groupSenderKey.createMany({
+      data: distributions.map((d: { recipient_id: string; encrypted_key: string }) => ({
+        conversation_id: conversationId,
+        sender_id: userId,
+        recipient_id: d.recipient_id,
+        key_id,
+        encrypted_key: d.encrypted_key,
+      })),
+      skipDuplicates: true,
+    });
+
+    return res.status(201).json({ success: true, key_id, distributed_to: distributions.length });
+  } catch (error) {
+    console.error('Distribute sender key error:', error);
+    return res.status(500).json({ error: 'Failed to distribute sender key' });
+  }
+});
+
+/**
+ * GET /keys/group/:conversationId/sender-keys
+ * Get all sender keys encrypted for the requesting user.
+ * Returns the latest key_id per sender.
+ */
+router.get('/group/:conversationId/sender-keys', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.userId!;
+
+    // Verify membership
+    const participant = await prisma.conversationParticipant.findUnique({
+      where: { conversation_id_user_id: { conversation_id: conversationId, user_id: userId } },
+    });
+    if (!participant) {
+      return res.status(403).json({ error: 'Not a conversation participant' });
+    }
+
+    // Get all sender keys encrypted for this user
+    const senderKeys = await prisma.groupSenderKey.findMany({
+      where: {
+        conversation_id: conversationId,
+        recipient_id: userId,
+      },
+      orderBy: { key_id: 'desc' },
+      include: {
+        sender: {
+          select: { public_key: true },
+        },
+      },
+    });
+
+    // Deduplicate: keep only the latest key_id per sender
+    const latestBySender = new Map<string, typeof senderKeys[0]>();
+    for (const sk of senderKeys) {
+      if (!latestBySender.has(sk.sender_id)) {
+        latestBySender.set(sk.sender_id, sk);
+      }
+    }
+
+    const keys = Array.from(latestBySender.values()).map(sk => ({
+      sender_id: sk.sender_id,
+      key_id: sk.key_id,
+      encrypted_key: sk.encrypted_key,
+      sender_public_key: sk.sender.public_key,
+    }));
+
+    return res.json({ keys });
+  } catch (error) {
+    console.error('Fetch sender keys error:', error);
+    return res.status(500).json({ error: 'Failed to fetch sender keys' });
+  }
+});
+
+/**
+ * GET /keys/group/:conversationId/sender-key/:senderId
+ * Get a specific sender's latest key encrypted for the requesting user.
+ */
+router.get('/group/:conversationId/sender-key/:senderId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId, senderId } = req.params;
+    const userId = req.userId!;
+
+    // Verify membership
+    const participant = await prisma.conversationParticipant.findUnique({
+      where: { conversation_id_user_id: { conversation_id: conversationId, user_id: userId } },
+    });
+    if (!participant) {
+      return res.status(403).json({ error: 'Not a conversation participant' });
+    }
+
+    const senderKey = await prisma.groupSenderKey.findFirst({
+      where: {
+        conversation_id: conversationId,
+        sender_id: senderId,
+        recipient_id: userId,
+      },
+      orderBy: { key_id: 'desc' },
+      include: {
+        sender: {
+          select: { public_key: true },
+        },
+      },
+    });
+
+    if (!senderKey) {
+      return res.status(404).json({ error: 'No sender key found' });
+    }
+
+    return res.json({
+      sender_id: senderKey.sender_id,
+      key_id: senderKey.key_id,
+      encrypted_key: senderKey.encrypted_key,
+      sender_public_key: senderKey.sender.public_key,
+    });
+  } catch (error) {
+    console.error('Fetch sender key error:', error);
+    return res.status(500).json({ error: 'Failed to fetch sender key' });
+  }
+});
+
+/**
+ * GET /keys/group/:conversationId/member-keys
+ * Get public keys for all members of a group conversation.
+ * Used by clients to encrypt sender key distributions.
+ */
+router.get('/group/:conversationId/member-keys', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.userId!;
+
+    // Verify membership
+    const participant = await prisma.conversationParticipant.findUnique({
+      where: { conversation_id_user_id: { conversation_id: conversationId, user_id: userId } },
+    });
+    if (!participant) {
+      return res.status(403).json({ error: 'Not a conversation participant' });
+    }
+
+    const members = await prisma.conversationParticipant.findMany({
+      where: { conversation_id: conversationId },
+      include: {
+        user: {
+          select: { id: true, public_key: true, username: true },
+        },
+      },
+    });
+
+    return res.json({
+      members: members.map(m => ({
+        user_id: m.user.id,
+        public_key: m.user.public_key,
+        username: m.user.username,
+      })),
+    });
+  } catch (error) {
+    console.error('Fetch member keys error:', error);
+    return res.status(500).json({ error: 'Failed to fetch member keys' });
+  }
+});
+
+/**
+ * DELETE /keys/group/:conversationId/sender-keys
+ * Delete all sender keys for a user leaving a group.
+ * Called when a member leaves or is removed.
+ */
+router.delete('/group/:conversationId/sender-keys', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.userId!;
+
+    // Delete all sender keys created by this user AND received by this user
+    await prisma.$transaction([
+      prisma.groupSenderKey.deleteMany({
+        where: { conversation_id: conversationId, sender_id: userId },
+      }),
+      prisma.groupSenderKey.deleteMany({
+        where: { conversation_id: conversationId, recipient_id: userId },
+      }),
+    ]);
+
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to delete sender keys' });
+  }
+});
+
 export default router;

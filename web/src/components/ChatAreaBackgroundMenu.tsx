@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import {
-  CheckSquare, Eraser, ArrowDown, Wallpaper, Search, Pin,
+  CheckSquare, Eraser, ArrowDown, Search, Pin,
 } from 'lucide-react';
 
 interface ChatAreaBackgroundMenuProps {

@@ -1,19 +1,19 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useUIStore, COLOR_SCHEMES, type ChatBubbleStyle, type FontSize } from '@/stores/uiStore';
+import { useUIStore, COLOR_SCHEMES, CHAT_BACKGROUNDS, type ChatBubbleStyle, type FontSize } from '@/stores/uiStore';
 import {
   X, Moon, Sun, Shield, Monitor, Smartphone, Trash2,
   Palette, MessageSquare, Type, Sparkles,
   Zap, Info, Heart, Globe, Bell, BellOff,
-  Layout, Eye, Clock, CheckCircle2
+  Layout, Eye, Clock, CheckCircle2, Image as ImageIcon,
+  Volume2, VolumeX, Phone, HardDrive,
 } from 'lucide-react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { cn } from '@/lib/utils';
-import { setNotificationSoundEnabled } from '@/lib/notifications';
 
-interface Device { id: string; device_name: string; device_type: string; last_active: string; is_current?: boolean; }
+interface Device { id: string; device_name: string; platform: string; last_active_at: string; created_at: string; is_current?: boolean; }
 
 const BUBBLE_STYLES: { id: ChatBubbleStyle; name: string; desc: string }[] = [
   { id: 'gradient', name: 'Gradient', desc: 'Rich gradient bubbles' },
@@ -48,6 +48,10 @@ export default function SettingsPanel() {
     colorScheme, setColorScheme, bubbleStyle, setBubbleStyle,
     fontSize, setFontSize, compactMode, setCompactMode,
     animationsEnabled, setAnimationsEnabled, settingsTab, setSettingsTab,
+    chatBackground, setChatBackground,
+    messageSoundEnabled, setMessageSoundEnabled,
+    callSoundEnabled, setCallSoundEnabled,
+    notifSoundEnabled, setNotifSoundEnabled,
   } = useUIStore();
   const [devices, setDevices] = useState<Device[]>([]);
   const [privacy, setPrivacy] = useState({ show_online_status: true, show_last_seen: true, show_read_receipts: true });
@@ -71,7 +75,9 @@ export default function SettingsPanel() {
   };
   const updatePrivacy = async (key: keyof typeof privacy, value: boolean) => {
     setPrivacy(p => ({ ...p, [key]: value }));
-    try { await api.put('/users/me/privacy', { [key]: value }); toast.success('Privacy updated'); }
+    // Map client field names to server field names
+    const serverKey = key === 'show_read_receipts' ? 'allow_read_receipts' : key;
+    try { await api.put('/users/me/privacy', { [serverKey]: value }); toast.success('Privacy updated'); }
     catch { toast.error('Failed to update'); }
   };
   const removeDevice = async (id: string) => {
@@ -86,6 +92,7 @@ export default function SettingsPanel() {
     { id: 'notifications' as const, icon: Bell, label: 'Notifications' },
     { id: 'privacy' as const, icon: Shield, label: 'Privacy' },
     { id: 'devices' as const, icon: Smartphone, label: 'Devices' },
+    { id: 'storage' as const, icon: HardDrive, label: 'Storage' },
     { id: 'about' as const, icon: Info, label: 'About' },
   ];
 
@@ -292,8 +299,34 @@ export default function SettingsPanel() {
                       if (!notificationsEnabled) {
                         const perm = await Notification.requestPermission();
                         setNotificationsEnabled(perm === 'granted');
+                      } else {
+                        setNotificationsEnabled(false);
                       }
                     }} />
+                  </div>
+                </section>
+
+                {/* Chat Background */}
+                <section>
+                  <h4 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <ImageIcon className="w-3.5 h-3.5" /> Chat Background
+                  </h4>
+                  <div className="grid grid-cols-4 gap-2">
+                    {CHAT_BACKGROUNDS.map(bg => (
+                      <button key={bg.id} onClick={() => setChatBackground(bg.id)}
+                        className={cn(
+                          'aspect-square rounded-xl border-2 transition-all duration-200 flex flex-col items-center justify-center gap-1 text-center p-2',
+                          chatBackground === bg.id
+                            ? 'border-[var(--accent)] bg-[var(--accent-subtle)] ring-1 ring-[var(--accent)]'
+                            : 'border-[var(--border)] hover:border-[var(--accent-muted)]',
+                          `chat-bg-${bg.id}`
+                        )}>
+                        <span className="text-lg">{bg.preview}</span>
+                        <span className={cn('text-[9px] font-medium', chatBackground === bg.id ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]')}>
+                          {bg.label}
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </section>
               </div>
@@ -322,6 +355,8 @@ export default function SettingsPanel() {
                     if (!notificationsEnabled) {
                       const perm = await Notification.requestPermission();
                       setNotificationsEnabled(perm === 'granted');
+                    } else {
+                      setNotificationsEnabled(false);
                     }
                   }} />
                 </div>
@@ -330,16 +365,40 @@ export default function SettingsPanel() {
                 <div className="flex items-center justify-between p-4 rounded-xl bg-[var(--bg-app)] border border-[var(--border)] transition-all duration-200 hover:border-[var(--accent-muted)]">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-lg bg-[var(--accent-subtle)] flex items-center justify-center">
-                      <Zap className="w-4 h-4 text-[var(--accent)]" />
+                      {messageSoundEnabled ? <Volume2 className="w-4 h-4 text-[var(--accent)]" /> : <VolumeX className="w-4 h-4 text-[var(--text-muted)]" />}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-[var(--text-primary)]">Message Sounds</p>
+                      <p className="text-xs text-[var(--text-muted)]">Play sounds for incoming messages</p>
+                    </div>
+                  </div>
+                  <Toggle active={messageSoundEnabled} onChange={() => setMessageSoundEnabled(!messageSoundEnabled)} />
+                </div>
+
+                <div className="flex items-center justify-between p-4 rounded-xl bg-[var(--bg-app)] border border-[var(--border)] transition-all duration-200 hover:border-[var(--accent-muted)]">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-[var(--accent-subtle)] flex items-center justify-center">
+                      {callSoundEnabled ? <Phone className="w-4 h-4 text-[var(--accent)]" /> : <VolumeX className="w-4 h-4 text-[var(--text-muted)]" />}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-[var(--text-primary)]">Call Ringtone</p>
+                      <p className="text-xs text-[var(--text-muted)]">Play ringtone for incoming calls</p>
+                    </div>
+                  </div>
+                  <Toggle active={callSoundEnabled} onChange={() => setCallSoundEnabled(!callSoundEnabled)} />
+                </div>
+
+                <div className="flex items-center justify-between p-4 rounded-xl bg-[var(--bg-app)] border border-[var(--border)] transition-all duration-200 hover:border-[var(--accent-muted)]">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-[var(--accent-subtle)] flex items-center justify-center">
+                      {notifSoundEnabled ? <Bell className="w-4 h-4 text-[var(--accent)]" /> : <BellOff className="w-4 h-4 text-[var(--text-muted)]" />}
                     </div>
                     <div>
                       <p className="text-sm font-medium text-[var(--text-primary)]">Notification Sounds</p>
-                      <p className="text-xs text-[var(--text-muted)]">Play sounds for incoming messages & calls</p>
+                      <p className="text-xs text-[var(--text-muted)]">Play sounds for push notifications</p>
                     </div>
                   </div>
-                  <Toggle active={true} onChange={() => {
-                    setNotificationSoundEnabled(true);
-                  }} />
+                  <Toggle active={notifSoundEnabled} onChange={() => setNotifSoundEnabled(!notifSoundEnabled)} />
                 </div>
 
                 {/* Info */}
@@ -408,7 +467,7 @@ export default function SettingsPanel() {
                               </span>
                             )}
                           </p>
-                          <p className="text-xs text-[var(--text-muted)]">{d.device_type} · Last active {d.last_active}</p>
+                          <p className="text-xs text-[var(--text-muted)]">{d.platform} · Last active {new Date(d.last_active_at).toLocaleDateString()}</p>
                         </div>
                       </div>
                       {!d.is_current && (
@@ -419,6 +478,64 @@ export default function SettingsPanel() {
                       )}
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {settingsTab === 'storage' && (
+              <div className="space-y-4 animate-fade-in">
+                <h4 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <HardDrive className="w-3.5 h-3.5" /> Storage Management
+                </h4>
+
+                {/* Local Storage Usage */}
+                <div className="p-4 rounded-xl bg-[var(--bg-app)] border border-[var(--border)]">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-sm font-medium text-[var(--text-primary)]">Local Storage</p>
+                    <span className="text-xs text-[var(--text-muted)]">
+                      {typeof window !== 'undefined' ? `${(JSON.stringify(localStorage).length / 1024).toFixed(1)} KB used` : ''}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 bg-[var(--bg-wash)] rounded-full overflow-hidden">
+                    <div className="h-full bg-[var(--accent)] rounded-full transition-all" style={{ width: '15%' }} />
+                  </div>
+                </div>
+
+                {/* Clear Actions */}
+                <div className="space-y-2">
+                  {[
+                    { label: 'Clear Message Drafts', key: 'zynk-drafts', desc: 'Remove all saved message drafts' },
+                    { label: 'Clear Mute Settings', key: 'zynk-mute-durations', desc: 'Reset all muted conversations' },
+                    { label: 'Clear Pinned Messages', key: 'zynk-pinned-messages', desc: 'Unpin all pinned messages locally' },
+                    { label: 'Clear Starred Messages', key: 'zynk-starred-messages', desc: 'Remove all starred messages locally' },
+                  ].map(item => (
+                    <div key={item.key} className="flex items-center justify-between p-3 rounded-xl bg-[var(--bg-app)] border border-[var(--border)]">
+                      <div>
+                        <p className="text-sm font-medium text-[var(--text-primary)]">{item.label}</p>
+                        <p className="text-xs text-[var(--text-muted)]">{item.desc}</p>
+                      </div>
+                      <button onClick={() => {
+                        if (typeof window !== 'undefined') localStorage.removeItem(item.key);
+                        toast.success(`${item.label} done`);
+                      }} className="px-3 py-1.5 text-xs font-medium text-[var(--danger)] bg-red-500/5 hover:bg-red-500/10 rounded-lg transition-colors">
+                        Clear
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Clear all local data */}
+                <div className="p-4 rounded-xl border-2 border-dashed border-[var(--danger)] bg-red-500/5">
+                  <p className="text-sm font-semibold text-[var(--danger)] mb-1">Clear All Local Data</p>
+                  <p className="text-xs text-[var(--text-muted)] mb-3">This will clear all cached data, preferences, and encryption keys. You will need to log in again.</p>
+                  <button onClick={() => {
+                    if (confirm('Are you sure? This will log you out and clear all local data.')) {
+                      localStorage.clear();
+                      window.location.href = '/login';
+                    }
+                  }} className="px-4 py-2 text-xs font-semibold text-white bg-[var(--danger)] rounded-lg hover:brightness-110 transition-all">
+                    Clear Everything & Logout
+                  </button>
                 </div>
               </div>
             )}

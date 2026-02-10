@@ -7,8 +7,9 @@ import { X, Search, Loader2, Users, Check, ArrowLeft, ArrowRight } from 'lucide-
 import { getInitials, cn, getAvatarColor } from '@/lib/utils';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
+import { useCryptoStore } from '@/stores/cryptoStore';
 
-interface SearchUser { id: string; username: string; display_name: string | null; }
+interface SearchUser { user_id: string; username: string; display_name: string | null; }
 
 export default function GroupCreateModal() {
   const { showGroupCreate, setShowGroupCreate } = useUIStore();
@@ -40,7 +41,7 @@ export default function GroupCreateModal() {
   };
 
   const toggleMember = (user: SearchUser) => {
-    setSelectedMembers(prev => prev.find(m => m.id === user.id) ? prev.filter(m => m.id !== user.id) : [...prev, user]);
+    setSelectedMembers(prev => prev.find(m => m.user_id === user.user_id) ? prev.filter(m => m.user_id !== user.user_id) : [...prev, user]);
   };
 
   const handleCreate = async () => {
@@ -48,9 +49,13 @@ export default function GroupCreateModal() {
     if (selectedMembers.length === 0) { toast.error('Add at least one member'); return; }
     setIsCreating(true);
     try {
-      const res = await api.post('/groups', { name: groupName.trim(), description: groupDescription.trim() || null, member_ids: selectedMembers.map(m => m.id) });
+      const res = await api.post('/groups', { name: groupName.trim(), description: groupDescription.trim() || null, member_ids: selectedMembers.map(m => m.user_id) });
       await fetchConversations();
-      if (res.data.conversation_id) setActiveConversation(res.data.conversation_id);
+      if (res.data.conversation_id) {
+        setActiveConversation(res.data.conversation_id);
+        // Distribute sender key to all group members for E2EE
+        useCryptoStore.getState().distributeGroupSenderKey(res.data.conversation_id).catch(() => {});
+      }
       setShowGroupCreate(false);
       toast.success('Group created');
     } catch { toast.error('Failed to create group'); }
@@ -110,7 +115,7 @@ export default function GroupCreateModal() {
             {selectedMembers.length > 0 && (
               <div className="px-4 pt-3 flex flex-wrap gap-2">
                 {selectedMembers.map(m => (
-                  <span key={m.id} className="inline-flex items-center gap-1.5 bg-[var(--accent-subtle)] text-[var(--accent)] px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all duration-200 hover:shadow-md">
+                  <span key={m.user_id} className="inline-flex items-center gap-1.5 bg-[var(--accent-subtle)] text-[var(--accent)] px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all duration-200 hover:shadow-md">
                     {m.display_name || m.username}
                     <button onClick={() => toggleMember(m)} className="hover:text-[var(--danger)] transition-colors"><X className="w-3 h-3" /></button>
                   </span>
@@ -131,9 +136,9 @@ export default function GroupCreateModal() {
               {isSearching ? (
                 <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /></div>
               ) : results.map(u => {
-                const isSelected = selectedMembers.some(m => m.id === u.id);
+                const isSelected = selectedMembers.some(m => m.user_id === u.user_id);
                 return (
-                  <button key={u.id} onClick={() => toggleMember(u)}
+                  <button key={u.user_id} onClick={() => toggleMember(u)}
                     className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-all duration-200 text-left group">
                     <div className="relative">
                       <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getAvatarColor(u.username), isSelected && 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]')}>

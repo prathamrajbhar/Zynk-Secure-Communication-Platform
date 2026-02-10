@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
 import { Message } from '@/stores/chatStore';
-import { cn, formatMessageTime } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { X, Check, CheckCheck, Clock } from 'lucide-react';
 
 interface MessageInfoModalProps {

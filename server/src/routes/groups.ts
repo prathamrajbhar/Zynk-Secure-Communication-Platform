@@ -97,6 +97,57 @@ router.post('/', authenticate, validate(createGroupSchema), async (req: AuthRequ
   }
 });
 
+// ========== EXACT-PATH ROUTES (must come before parameterized) ==========
+
+// GET /groups/my/list
+router.get('/my/list', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const groups = await prisma.group.findMany({
+      where: {
+        members: {
+          some: { user_id: req.userId! }
+        }
+      },
+      include: {
+        _count: {
+          select: { members: true }
+        },
+        conversation: {
+          select: {
+            messages: {
+              where: { deleted_at: null },
+              orderBy: { created_at: 'desc' },
+              take: 1,
+              select: { created_at: true }
+            }
+          }
+        }
+      }
+    });
+
+    const formattedGroups = groups.map(g => ({
+      group_id: g.id,
+      name: g.name,
+      avatar_url: g.avatar_url,
+      conversation_id: g.conversation_id,
+      created_at: g.created_at,
+      member_count: g._count.members,
+      last_activity: g.conversation?.messages[0]?.created_at || null
+    })).sort((a, b) => {
+      const timeA = a.last_activity ? new Date(a.last_activity).getTime() : 0;
+      const timeB = b.last_activity ? new Date(b.last_activity).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    return res.json({ groups: formattedGroups });
+  } catch (error) {
+    console.error('Fetch my groups error:', error);
+    return res.status(500).json({ error: 'Failed to fetch groups' });
+  }
+});
+
+// ========== PARAMETERIZED ROUTES ==========
+
 // GET /groups/:groupId
 router.get('/:groupId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -293,6 +344,58 @@ router.post('/:groupId/members', authenticate, async (req: AuthRequest, res: Res
   }
 });
 
+// PUT /groups/:groupId/members/:userId — update member role (admin toggle)
+router.put('/:groupId/members/:userId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { groupId, userId } = req.params;
+    const { role } = req.body;
+
+    if (!role || !['admin', 'member'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be "admin" or "member".' });
+    }
+
+    // Verify requester is admin
+    const adminCheck = await prisma.groupMember.findUnique({
+      where: { group_id_user_id: { group_id: groupId, user_id: req.userId! } },
+      select: { role: true }
+    });
+
+    if (!adminCheck || adminCheck.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    // Prevent demoting yourself
+    if (userId === req.userId && role !== 'admin') {
+      return res.status(400).json({ error: 'Cannot demote yourself' });
+    }
+
+    const group = await prisma.group.findUnique({
+      where: { id: groupId },
+      select: { conversation_id: true }
+    });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.groupMember.update({
+        where: { group_id_user_id: { group_id: groupId, user_id: userId } },
+        data: { role: role as ParticipantRole }
+      });
+
+      // Also update conversation participant role
+      if (group?.conversation_id) {
+        await tx.conversationParticipant.updateMany({
+          where: { conversation_id: group.conversation_id, user_id: userId },
+          data: { role: role as ParticipantRole }
+        });
+      }
+    });
+
+    return res.json({ user_id: userId, role, updated_at: new Date().toISOString() });
+  } catch (error) {
+    console.error('Update member role error:', error);
+    return res.status(500).json({ error: 'Failed to update member role' });
+  }
+});
+
 // DELETE /groups/:groupId/members/:userId
 router.delete('/:groupId/members/:userId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -330,53 +433,6 @@ router.delete('/:groupId/members/:userId', authenticate, async (req: AuthRequest
     return res.status(204).send();
   } catch (error) {
     return res.status(500).json({ error: 'Failed to remove member' });
-  }
-});
-
-// GET /groups/my/list
-router.get('/my/list', authenticate, async (req: AuthRequest, res: Response) => {
-  try {
-    const groups = await prisma.group.findMany({
-      where: {
-        members: {
-          some: { user_id: req.userId! }
-        }
-      },
-      include: {
-        _count: {
-          select: { members: true }
-        },
-        conversation: {
-          select: {
-            messages: {
-              where: { deleted_at: null },
-              orderBy: { created_at: 'desc' },
-              take: 1,
-              select: { created_at: true }
-            }
-          }
-        }
-      }
-    });
-
-    const formattedGroups = groups.map(g => ({
-      group_id: g.id,
-      name: g.name,
-      avatar_url: g.avatar_url,
-      conversation_id: g.conversation_id,
-      created_at: g.created_at,
-      member_count: g._count.members,
-      last_activity: g.conversation?.messages[0]?.created_at || null
-    })).sort((a, b) => {
-      const timeA = a.last_activity ? new Date(a.last_activity).getTime() : 0;
-      const timeB = b.last_activity ? new Date(b.last_activity).getTime() : 0;
-      return timeB - timeA;
-    });
-
-    return res.json({ groups: formattedGroups });
-  } catch (error) {
-    console.error('Fetch my groups error:', error);
-    return res.status(500).json({ error: 'Failed to fetch groups' });
   }
 });
 

@@ -215,6 +215,9 @@ export function setupWebSocket(httpServer: HTTPServer) {
             conversation_id: { in: convIds },
             sender_id: { not: userId },
             status: 'sent' as MessageStatus,
+            deletedFor: {
+              none: { user_id: userId }
+            },
             // Only catch up messages from the last 24 hours to keep the query fast
             created_at: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
           },
@@ -560,6 +563,54 @@ export function setupWebSocket(httpServer: HTTPServer) {
         conversation_id,
         user_id: userId,
       });
+    });
+
+    // ============== GROUP E2EE SENDER KEY EVENTS ==============
+
+    // Notify group members that a sender key has been distributed
+    socket.on('group:sender-key-distributed', async (data) => {
+      try {
+        const { conversation_id, key_id } = data;
+        if (!conversation_id) return;
+
+        // Verify membership
+        const participant = await prisma.conversationParticipant.findUnique({
+          where: { conversation_id_user_id: { conversation_id, user_id: userId } },
+        });
+        if (!participant) return;
+
+        // Notify other members to fetch the new sender key
+        socket.to(`conversation:${conversation_id}`).emit('group:sender-key-available', {
+          conversation_id,
+          sender_id: userId,
+          key_id,
+        });
+      } catch (error) {
+        console.error('Sender key distribution notification error:', error);
+      }
+    });
+
+    // Request key rotation (triggered after member add/remove)
+    socket.on('group:request-key-rotation', async (data) => {
+      try {
+        const { conversation_id, reason } = data;
+        if (!conversation_id) return;
+
+        // Verify membership
+        const participant = await prisma.conversationParticipant.findUnique({
+          where: { conversation_id_user_id: { conversation_id, user_id: userId } },
+        });
+        if (!participant) return;
+
+        // Broadcast rotation request to all members in the conversation
+        io.to(`conversation:${conversation_id}`).emit('group:key-rotation-needed', {
+          conversation_id,
+          triggered_by: userId,
+          reason, // 'member_added' | 'member_removed' | 'periodic'
+        });
+      } catch (error) {
+        console.error('Key rotation request error:', error);
+      }
     });
 
     // ============== CALL EVENTS (WebRTC Signaling) ==============

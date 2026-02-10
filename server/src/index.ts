@@ -21,6 +21,8 @@ import groupRoutes from './routes/groups';
 import callRoutes from './routes/calls';
 import fileRoutes from './routes/files';
 import keyRoutes from './routes/keys';
+import reportRoutes from './routes/reports';
+import pollRoutes from './routes/polls';
 
 const app = express();
 const server = http.createServer(app);
@@ -157,10 +159,6 @@ const authRegisterLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// SECURITY: DO NOT serve uploads statically without authentication
-// Files are served through the authenticated /api/v1/files/:fileId/download endpoint
-// app.use('/uploads', express.static(path.resolve(config.upload.dir))); // REMOVED
-
 // ========== API Routes ==========
 
 // Apply auth-specific rate limiting
@@ -174,6 +172,8 @@ app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1/calls', callRoutes);
 app.use('/api/v1/files', fileRoutes);
 app.use('/api/v1/keys', keyRoutes);
+app.use('/api/v1/reports', reportRoutes);
+app.use('/api/v1/polls', pollRoutes);
 
 // Health check (no sensitive info)
 app.get('/api/health', (req, res) => {

@@ -3,6 +3,9 @@ import { create } from 'zustand';
 export type ColorScheme = 'violet' | 'ocean' | 'emerald' | 'rose' | 'amber' | 'crimson';
 export type ChatBubbleStyle = 'gradient' | 'solid' | 'minimal';
 export type FontSize = 'small' | 'medium' | 'large';
+export type ChatBackground = 'default' | 'dots' | 'grid' | 'waves' | 'gradient' | 'bubbles' | 'doodle';
+export type MuteDuration = '1h' | '8h' | '1w' | 'forever';
+export type SidebarFilter = 'all' | 'unread' | 'groups' | 'media';
 
 export const COLOR_SCHEMES: { id: ColorScheme; name: string; color: string }[] = [
   { id: 'violet', name: 'Indigo', color: '#5b5fc7' },
@@ -11,6 +14,16 @@ export const COLOR_SCHEMES: { id: ColorScheme; name: string; color: string }[] =
   { id: 'rose', name: 'Pink', color: '#e8366d' },
   { id: 'amber', name: 'Amber', color: '#e68a00' },
   { id: 'crimson', name: 'Red', color: '#d93025' },
+];
+
+export const CHAT_BACKGROUNDS: { id: ChatBackground; name: string; label: string; preview: string }[] = [
+  { id: 'default', name: 'Default', label: 'Default', preview: '🏠' },
+  { id: 'dots', name: 'Dots', label: 'Dots', preview: '⚫' },
+  { id: 'grid', name: 'Grid', label: 'Grid', preview: '🔲' },
+  { id: 'waves', name: 'Waves', label: 'Waves', preview: '🌊' },
+  { id: 'gradient', name: 'Gradient', label: 'Gradient', preview: '🌈' },
+  { id: 'bubbles', name: 'Bubbles', label: 'Bubbles', preview: '🫧' },
+  { id: 'doodle', name: 'Doodle', label: 'Doodle', preview: '✏️' },
 ];
 
 interface UIState {
@@ -26,7 +39,17 @@ interface UIState {
   showNewChat: boolean;
   showGroupCreate: boolean;
   showProfile: boolean;
-  settingsTab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'about';
+  showUserInfo: boolean;
+  settingsTab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'about';
+
+  // New feature state
+  chatBackground: ChatBackground;
+  sidebarFilter: SidebarFilter;
+  messageSoundEnabled: boolean;
+  callSoundEnabled: boolean;
+  notifSoundEnabled: boolean;
+
+  // Actions
   toggleTheme: () => void;
   setColorScheme: (scheme: ColorScheme) => void;
   setBubbleStyle: (style: ChatBubbleStyle) => void;
@@ -39,7 +62,13 @@ interface UIState {
   setShowNewChat: (show: boolean) => void;
   setShowGroupCreate: (show: boolean) => void;
   setShowProfile: (show: boolean) => void;
-  setSettingsTab: (tab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'about') => void;
+  setShowUserInfo: (show: boolean) => void;
+  setSettingsTab: (tab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'about') => void;
+  setChatBackground: (bg: ChatBackground) => void;
+  setSidebarFilter: (filter: SidebarFilter) => void;
+  setMessageSoundEnabled: (enabled: boolean) => void;
+  setCallSoundEnabled: (enabled: boolean) => void;
+  setNotifSoundEnabled: (enabled: boolean) => void;
   hydrateUI: () => void;
 }
 
@@ -62,7 +91,13 @@ export const useUIStore = create<UIState>((set) => ({
   showNewChat: false,
   showGroupCreate: false,
   showProfile: false,
+  showUserInfo: false,
   settingsTab: 'appearance',
+  chatBackground: 'default',
+  sidebarFilter: 'all',
+  messageSoundEnabled: true,
+  callSoundEnabled: true,
+  notifSoundEnabled: true,
 
   toggleTheme: () => {
     set(state => {
@@ -107,7 +142,30 @@ export const useUIStore = create<UIState>((set) => ({
   setShowNewChat: (show) => set({ showNewChat: show }),
   setShowGroupCreate: (show) => set({ showGroupCreate: show }),
   setShowProfile: (show) => set({ showProfile: show }),
+  setShowUserInfo: (show) => set({ showUserInfo: show }),
   setSettingsTab: (tab) => set({ settingsTab: tab }),
+
+  setChatBackground: (bg) => {
+    set({ chatBackground: bg });
+    localStorage.setItem('zynk-chat-bg', bg);
+  },
+
+  setSidebarFilter: (filter) => set({ sidebarFilter: filter }),
+
+  setMessageSoundEnabled: (enabled) => {
+    set({ messageSoundEnabled: enabled });
+    localStorage.setItem('zynk-msg-sound', String(enabled));
+  },
+
+  setCallSoundEnabled: (enabled) => {
+    set({ callSoundEnabled: enabled });
+    localStorage.setItem('zynk-call-sound', String(enabled));
+  },
+
+  setNotifSoundEnabled: (enabled) => {
+    set({ notifSoundEnabled: enabled });
+    localStorage.setItem('zynk-notif-sound', String(enabled));
+  },
 
   hydrateUI: () => {
     if (typeof window === 'undefined') return;
@@ -117,8 +175,11 @@ export const useUIStore = create<UIState>((set) => ({
     const fontSize = (localStorage.getItem('zynk-font-size') || 'medium') as FontSize;
     const compactMode = localStorage.getItem('zynk-compact-mode') === 'true';
     const animationsEnabled = localStorage.getItem('zynk-animations') !== 'false';
+    const chatBackground = (localStorage.getItem('zynk-chat-bg') || 'default') as ChatBackground;
+    const messageSoundEnabled = localStorage.getItem('zynk-msg-sound') !== 'false';
+    const callSoundEnabled = localStorage.getItem('zynk-call-sound') !== 'false';
+    const notifSoundEnabled = localStorage.getItem('zynk-notif-sound') !== 'false';
     applyTheme(theme, colorScheme);
-    set({ theme, colorScheme, bubbleStyle, fontSize, compactMode, animationsEnabled });
+    set({ theme, colorScheme, bubbleStyle, fontSize, compactMode, animationsEnabled, chatBackground, messageSoundEnabled, callSoundEnabled, notifSoundEnabled });
   },
 }));
-

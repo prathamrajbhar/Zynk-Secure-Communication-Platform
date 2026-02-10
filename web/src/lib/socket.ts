@@ -52,6 +52,12 @@ export const SOCKET_EVENTS = {
   CONVERSATION_CREATED: 'conversation:created',
   CONVERSATION_READ_RECEIPT: 'conversation:read_receipt',
 
+  // Group E2EE
+  GROUP_SENDER_KEY_DISTRIBUTED: 'group:sender-key-distributed',
+  GROUP_SENDER_KEY_AVAILABLE: 'group:sender-key-available',
+  GROUP_KEY_ROTATION_NEEDED: 'group:key-rotation-needed',
+  GROUP_REQUEST_KEY_ROTATION: 'group:request-key-rotation',
+
   // Heartbeat
   PING: 'ping',
   PONG: 'pong',

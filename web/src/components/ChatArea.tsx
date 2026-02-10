@@ -1,17 +1,19 @@
 'use client';
 
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
+import { useUIStore } from '@/stores/uiStore';
 import { formatMessageTime, getInitials, cn, getAvatarColor } from '@/lib/utils';
 import {
   Send, Paperclip, Phone, Video, Lock, Shield,
   Check, CheckCheck, Image as ImageIcon, Smile,
-  ArrowLeft, Search, Loader2, Reply, Trash2, X,
+  ArrowLeft, Search, Loader2, Reply, X,
   Download, RefreshCw, AlertCircle, Clock, Mic, Users,
-  Star, Pin, Forward, MoreHorizontal,
+  Star, Pin, MoreHorizontal, Info, ChevronDown,
+  Upload, BarChart3,
 } from 'lucide-react';
 import { isValidEncryptedMessage } from '@/lib/crypto';
 import api from '@/lib/api';
@@ -25,6 +27,12 @@ import EditMessageModal from './EditMessageModal';
 import MessageInfoModal from './MessageInfoModal';
 import MessageSelectionBar from './MessageSelectionBar';
 import ChatAreaBackgroundMenu from './ChatAreaBackgroundMenu';
+import VoiceRecorder from './VoiceRecorder';
+import { SkeletonMessageList } from './Skeletons';
+import GifPanel from './GifPanel';
+import PollCreateModal from './PollCreateModal';
+import PollBubble from './PollBubble';
+import MentionAutocomplete from './MentionAutocomplete';
 
 const QUICK_EMOJIS = ['😀', '😂', '❤️', '👍', '🔥', '🎉', '😢', '🤔', '👋', '🙏', '💯', '✨', '😎', '🥳', '😡', '💀'];
 const EMOJI_CATEGORIES: Record<string, string[]> = {
@@ -115,10 +123,12 @@ export default function ChatArea() {
     sendMessageOptimistic, retryMessage, onlineUsers,
     setActiveConversation, markConversationRead, sendTyping,
     starredMessages, pinnedMessages, toggleStarMessage, togglePinMessage, editMessage,
-    clearChatHistory, deleteConversation,
+    clearChatHistory, isLoadingMessages,
+    hasMoreMessages, fetchOlderMessages, setDraft, getDraft,
   } = useChatStore();
   const connectionStatus = useConnectionStore(state => state.status);
   const { initiateCall } = useCallStore();
+  const { chatBackground, showUserInfo, setShowUserInfo } = useUIStore();
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -143,18 +153,54 @@ export default function ChatArea() {
   const [backgroundMenu, setBackgroundMenu] = useState<{ x: number; y: number } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ messageId: string; forEveryone: boolean } | null>(null);
   const [showPinnedOverlay, setShowPinnedOverlay] = useState(false);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
+  const [showGifPanel, setShowGifPanel] = useState(false);
+  const [showPollModal, setShowPollModal] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const emojiRef = useRef<HTMLDivElement>(null);
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const dragCounterRef = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const conversation = conversations.find(c => c.id === activeConversation);
   const conversationMessages = useMemo(() => activeConversation ? (messages[activeConversation] || []) : [], [activeConversation, messages]);
   const conversationMessagesLength = conversationMessages.length;
   const lastMessageId = conversationMessagesLength > 0 ? conversationMessages[conversationMessagesLength - 1].id : null;
   const typing = activeConversation ? (typingUsers[activeConversation] || []) : [];
+
+  const [groupMembers, setGroupMembers] = useState<{ id: string; username: string; display_name?: string }[]>([]);
+
+  // Fetch group members for @mention support
+  useEffect(() => {
+    if (conversation?.type !== 'group' || !conversation.group_info?.group_id) {
+      setGroupMembers([]);
+      return;
+    }
+    let cancelled = false;
+    api.get(`/groups/${conversation.group_info.group_id}`)
+      .then(res => {
+        if (cancelled) return;
+        const members = (res.data.members || []).map((m: { user_id: string; username: string; display_name?: string }) => ({
+          id: m.user_id,
+          username: m.username,
+          display_name: m.display_name || m.username,
+        }));
+        setGroupMembers(members);
+      })
+      .catch(() => { if (!cancelled) setGroupMembers([]); });
+    return () => { cancelled = true; };
+  }, [conversation?.type, conversation?.group_info?.group_id]);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [lastMessageId]);
 
@@ -174,12 +220,90 @@ export default function ChatArea() {
   useEffect(() => {
     setSelectionMode(false);
     setSelectedMessages(new Set());
+    setShowVoiceRecorder(false);
+    // Hydrate draft for new conversation
+    if (activeConversation) {
+      const draft = getDraft(activeConversation);
+      setInput(draft);
+    } else {
+      setInput('');
+    }
+  }, [activeConversation, getDraft]);
+
+  // Save draft on input change (debounced)
+  useEffect(() => {
+    if (!activeConversation) return;
+    const timer = setTimeout(() => setDraft(activeConversation, input), 500);
+    return () => clearTimeout(timer);
+  }, [input, activeConversation, setDraft]);
+
+  // Infinite scroll — load older messages when scrolled to top
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    if (!sentinel || !activeConversation) return;
+    const observer = new IntersectionObserver(async (entries) => {
+      if (entries[0].isIntersecting && hasMoreMessages[activeConversation] && !isLoadingOlder) {
+        setIsLoadingOlder(true);
+        const container = messagesContainerRef.current;
+        const prevScrollHeight = container?.scrollHeight || 0;
+        await fetchOlderMessages(activeConversation);
+        // Maintain scroll position after prepending messages
+        requestAnimationFrame(() => {
+          if (container) {
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - prevScrollHeight;
+          }
+        });
+        setIsLoadingOlder(false);
+      }
+    }, { root: messagesContainerRef.current, threshold: 0.1 });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [activeConversation, hasMoreMessages, isLoadingOlder, fetchOlderMessages]);
+
+  // Show/hide scroll-to-bottom fab
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      setShowScrollBottom(distanceFromBottom > 200);
+    };
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
   }, [activeConversation]);
+
+  // Drag & drop handlers
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) setIsDragging(true);
+  }, []);
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) setIsDragging(false);
+  }, []);
+  const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); }, []);
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    setIsDragging(false);
+    dragCounterRef.current = 0;
+    const files = e.dataTransfer.files;
+    if (files.length > 0 && fileInputRef.current) {
+      // Create a DataTransfer to assign to the file input
+      const dt = new DataTransfer();
+      dt.items.add(files[0]);
+      fileInputRef.current.files = dt.files;
+      fileInputRef.current.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }, []);
 
   const handleSend = () => {
     if (!input.trim() || !activeConversation) return;
     sendMessageOptimistic(activeConversation, input.trim(), 'text', replyTo?.id);
     setInput(''); setReplyTo(null);
+    setDraft(activeConversation, '');
     sendTyping(activeConversation, false);
   };
 
@@ -250,10 +374,24 @@ export default function ChatArea() {
 
   const handleDeleteMessage = async (messageId: string, forEveryone: boolean) => {
     try {
+      // Optimistically remove from local state immediately
+      if (activeConversation) {
+        const chatStore = useChatStore.getState();
+        const existing = chatStore.messages[activeConversation] || [];
+        const updated = forEveryone
+          ? existing.map(m => m.id === messageId ? { ...m, content: 'This message was deleted', encrypted_content: '[deleted]', message_type: 'text' as const } : m)
+          : existing.filter(m => m.id !== messageId);
+        useChatStore.setState(state => ({
+          messages: { ...state.messages, [activeConversation!]: updated },
+        }));
+      }
       await api.delete(`/messages/${messageId}?for_everyone=${forEveryone}`);
-      if (activeConversation) useChatStore.getState().fetchMessages(activeConversation);
       toast.success(forEveryone ? 'Deleted for everyone' : 'Deleted for you');
-    } catch { toast.error('Failed to delete message'); }
+    } catch {
+      // Revert by refetching on failure
+      if (activeConversation) useChatStore.getState().fetchMessages(activeConversation);
+      toast.error('Failed to delete message');
+    }
     setContextMenu(null);
     setDeleteConfirm(null);
   };
@@ -310,10 +448,8 @@ export default function ChatArea() {
   };
 
   const handleBulkDelete = async () => {
-    const ids = [...selectedMessages];
-    for (const id of ids) {
-      await handleDeleteMessage(id, false);
-    }
+    const ids = Array.from(selectedMessages);
+    await Promise.all(ids.map(id => handleDeleteMessage(id, false)));
     handleExitSelectionMode();
   };
 
@@ -325,7 +461,7 @@ export default function ChatArea() {
   };
 
   const handleBulkStar = () => {
-    [...selectedMessages].forEach(id => toggleStarMessage(id));
+    Array.from(selectedMessages).forEach(id => toggleStarMessage(id));
     handleExitSelectionMode();
     toast.success('Messages starred');
   };
@@ -361,9 +497,102 @@ export default function ChatArea() {
     toast.success('Copied');
   };
 
-  const handleReaction = (emoji: string) => {
-    // For now, reactions are shown as a toast since the server doesn't support reactions yet
-    toast.success(`Reacted ${emoji}`);
+  const handleReaction = async (emoji: string) => {
+    if (!contextMenu?.message) return;
+    try {
+      const res = await api.post(`/messages/${contextMenu.message.id}/react`, { emoji });
+      // Update message metadata in local state
+      const convId = activeConversation;
+      if (convId) {
+        const currentMessages = useChatStore.getState().messages[convId] || [];
+        const updated = currentMessages.map(m => {
+          if (m.id === contextMenu.message.id) {
+            return { ...m, metadata: { ...(m.metadata as Record<string, unknown> || {}), reactions: res.data.reactions } };
+          }
+          return m;
+        });
+        useChatStore.setState(state => ({
+          messages: { ...state.messages, [convId]: updated }
+        }));
+      }
+      toast.success(res.data.action === 'added' ? `Reacted ${emoji}` : `Removed ${emoji}`);
+    } catch {
+      toast.error('Failed to react');
+    }
+  };
+
+  // Voice message send
+  const handleSendVoice = async (audioBlob: Blob, duration?: number) => {
+    if (!activeConversation) return;
+    setIsUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', audioBlob, `voice-${Date.now()}.webm`);
+      formData.append('conversation_id', activeConversation);
+      const res = await api.post('/files/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
+      });
+      const content = JSON.stringify({
+        file_id: res.data.file_id,
+        filename: res.data.filename || 'voice-message.webm',
+        file_size: res.data.file_size,
+        mime_type: 'audio/webm',
+        ...(duration != null && { duration }),
+      });
+      sendMessageOptimistic(activeConversation, content, 'audio');
+      toast.success('Voice message sent');
+    } catch { toast.error('Failed to send voice message'); }
+    finally { setIsUploading(false); setShowVoiceRecorder(false); }
+  };
+
+  const handleGifSelect = (gif: { url: string; previewUrl: string; title: string; width: number; height: number }) => {
+    if (!activeConversation) return;
+    const content = JSON.stringify({ type: 'gif', url: gif.url, previewUrl: gif.previewUrl, title: gif.title, width: gif.width, height: gif.height });
+    sendMessageOptimistic(activeConversation, content, 'text');
+    setShowGifPanel(false);
+    toast.success('GIF sent');
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setInput(val);
+    handleTyping();
+    
+    // Check for @mention trigger
+    if (conversation?.type === 'group') {
+      const cursorPos = e.target.selectionStart;
+      const textBefore = val.substring(0, cursorPos);
+      const mentionMatch = textBefore.match(/@(\w*)$/);
+      if (mentionMatch) {
+        setMentionQuery(mentionMatch[1]);
+        // Calculate position for mention popup
+        const rect = e.target.getBoundingClientRect();
+        setMentionPosition({ top: rect.top - 10, left: rect.left + 20 });
+      } else {
+        setMentionQuery(null);
+      }
+    }
+  };
+
+  const handleMentionSelect = (member: { id: string; username: string; display_name?: string }) => {
+    const cursorPos = textareaRef.current?.selectionStart || input.length;
+    const textBefore = input.substring(0, cursorPos);
+    const textAfter = input.substring(cursorPos);
+    const beforeMention = textBefore.replace(/@\w*$/, '');
+    setInput(`${beforeMention}@${member.username} ${textAfter}`);
+    setMentionQuery(null);
+    textareaRef.current?.focus();
+  };
+
+  // Jump to a specific message with highlight animation
+  const handleJumpToMessage = (messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightMessageId(messageId);
+      setTimeout(() => setHighlightMessageId(null), 2000);
+    }
   };
 
   // Get pinned messages for current conversation
@@ -374,11 +603,23 @@ export default function ChatArea() {
     setSearchQuery(value);
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     if (value.trim().length < 2) { setSearchResults([]); return; }
-    searchDebounceRef.current = setTimeout(async () => {
+    searchDebounceRef.current = setTimeout(() => {
       setIsSearching(true);
       try {
-        const res = await api.post('/messages/search', { conversation_id: activeConversation, query: value.trim(), limit: 20 });
-        setSearchResults(res.data.results || []);
+        // Search locally on decrypted messages (server can't search E2EE content)
+        const query = value.trim().toLowerCase();
+        const localMessages = conversationMessages.filter(m => {
+          const text = (m.content || '').toLowerCase();
+          return text.includes(query);
+        });
+        const results: SearchResult[] = localMessages.map(m => ({
+          message_id: m.id,
+          sender_display_name: m.sender_display_name,
+          sender_username: m.sender_username || '',
+          snippet: (m.content || '').slice(0, 100),
+          created_at: m.created_at,
+        }));
+        setSearchResults(results);
       } catch { toast.error('Search failed'); }
       finally { setIsSearching(false); }
     }, 300);
@@ -415,7 +656,7 @@ export default function ChatArea() {
   /* ── Empty state ── */
   if (!activeConversation) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[var(--bg-app)] relative">
+      <div className="flex-1 hidden lg:flex items-center justify-center bg-[var(--bg-app)] relative">
         <div className="absolute inset-0 bg-[var(--gradient-surface)] pointer-events-none" />
         <div className="text-center relative z-10 animate-appear px-8">
           <div className="relative inline-block mb-8">
@@ -504,6 +745,11 @@ export default function ChatArea() {
               <Users className="w-[18px] h-[18px]" />
             </button>
           )}
+          {conversation?.type === 'one_to_one' && (
+            <button onClick={() => setShowUserInfo(!showUserInfo)} className={cn('btn-icon', showUserInfo && 'text-[var(--accent)]')} title="Contact info">
+              <Info className="w-[18px] h-[18px]" />
+            </button>
+          )}
           <button onClick={() => setShowSearch(!showSearch)} className="btn-icon">
             <Search className="w-[18px] h-[18px]" />
           </button>
@@ -547,7 +793,7 @@ export default function ChatArea() {
         <div className="max-h-40 overflow-y-auto border-b border-[var(--border)] bg-[var(--bg-surface)]">
           {searchResults.map((r) => (
             <button key={r.message_id} className="w-full text-left px-4 py-2.5 hover:bg-[var(--hover)] transition-colors"
-              onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
+              onClick={() => { handleJumpToMessage(r.message_id); setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
               <p className="text-xs text-[var(--accent)] font-medium">{r.sender_display_name || r.sender_username}</p>
               <p className="text-sm text-[var(--text-primary)] truncate">{r.snippet}</p>
             </button>
@@ -556,27 +802,74 @@ export default function ChatArea() {
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 lg:px-16 py-4 bg-[var(--bg-app)] chat-messages-bg scroll-thin"
-        onContextMenu={handleBackgroundContextMenu}>
-        <div className="flex justify-center mb-8">
-          <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-wash)] px-5 py-2 rounded-full flex items-center gap-2 border border-[var(--border)] shadow-soft">
-            <Lock className="w-3 h-3" /> Messages are end-to-end encrypted
-          </span>
-        </div>
-        {conversationMessages.map((msg: Message, i: number) => (
-          <div key={msg.id} className="message-bubble-wrapper">
-            <MessageBubble message={msg} isOwn={msg.sender_id === user?.id}
-              showName={i === 0 || conversationMessages[i - 1]?.sender_id !== msg.sender_id}
-              onReply={() => setReplyTo(msg)} onContextMenu={(e) => handleContextMenu(e, msg)}
-              onPreview={handleFilePreview} onDownload={handleFileDownload}
-              allMessages={conversationMessages} onRetry={retryMessage}
-              isStarred={starredMessages.has(msg.id)}
-              isPinned={currentPinnedMessageIds.includes(msg.id)}
-              selectionMode={selectionMode}
-              isSelected={selectedMessages.has(msg.id)}
-              onToggleSelect={() => handleToggleSelect(msg.id)} />
+      <div ref={messagesContainerRef}
+        className={cn('flex-1 overflow-y-auto px-4 lg:px-16 py-4 scroll-thin relative', `chat-bg-${chatBackground}`)}
+        onContextMenu={handleBackgroundContextMenu}
+        onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
+
+        {/* Drag & drop overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-20 bg-[var(--accent)]/10 border-2 border-dashed border-[var(--accent)] rounded-xl backdrop-blur-sm flex items-center justify-center animate-fade-in">
+            <div className="text-center">
+              <Upload className="w-12 h-12 text-[var(--accent)] mx-auto mb-2" />
+              <p className="text-lg font-semibold text-[var(--accent)]">Drop file to send</p>
+              <p className="text-sm text-[var(--text-muted)]">Max 50MB</p>
+            </div>
           </div>
-        ))}
+        )}
+
+        {/* Infinite scroll sentinel */}
+        <div ref={topSentinelRef} className="h-1" />
+
+        {/* Loading older messages indicator */}
+        {isLoadingOlder && (
+          <div className="flex justify-center py-3">
+            <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
+          </div>
+        )}
+
+        {/* Loading skeleton for initial load */}
+        {isLoadingMessages && conversationMessages.length === 0 ? (
+          <SkeletonMessageList />
+        ) : (
+          <>
+            <div className="flex justify-center mb-8">
+              <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-wash)] px-5 py-2 rounded-full flex items-center gap-2 border border-[var(--border)] shadow-soft">
+                <Lock className="w-3 h-3" /> Messages are end-to-end encrypted
+              </span>
+            </div>
+            {conversationMessages.map((msg: Message, i: number) => {
+              // Unread divider: show before first unread message from others
+              const showUnreadDivider = i > 0
+                && msg.sender_id !== user?.id
+                && msg.status !== 'read'
+                && (i === 0 || conversationMessages[i - 1]?.status === 'read' || conversationMessages[i - 1]?.sender_id === user?.id);
+
+              return (
+                <div key={msg.id} id={`msg-${msg.id}`} className="message-bubble-wrapper">
+                  {showUnreadDivider && (
+                    <div className="flex items-center gap-3 my-4 animate-fade-in">
+                      <div className="flex-1 h-px bg-[var(--accent)]" />
+                      <span className="text-xs font-semibold text-[var(--accent)] px-2">New messages</span>
+                      <div className="flex-1 h-px bg-[var(--accent)]" />
+                    </div>
+                  )}
+                  <MessageBubble message={msg} isOwn={msg.sender_id === user?.id}
+                    showName={i === 0 || conversationMessages[i - 1]?.sender_id !== msg.sender_id}
+                    onReply={() => setReplyTo(msg)} onContextMenu={(e) => handleContextMenu(e, msg)}
+                    onPreview={handleFilePreview} onDownload={handleFileDownload}
+                    allMessages={conversationMessages} onRetry={retryMessage}
+                    isStarred={starredMessages.has(msg.id)}
+                    isPinned={currentPinnedMessageIds.includes(msg.id)}
+                    selectionMode={selectionMode}
+                    isSelected={selectedMessages.has(msg.id)}
+                    onToggleSelect={() => handleToggleSelect(msg.id)}
+                    isHighlighted={highlightMessageId === msg.id} />
+                </div>
+              );
+            })}
+          </>
+        )}
         {typing.length > 0 && (
           <div className="flex items-start gap-2 mt-2">
             <div className="bg-[var(--bg-wash)] rounded-2xl rounded-bl-sm px-4 py-3">
@@ -589,6 +882,14 @@ export default function ChatArea() {
           </div>
         )}
         <div ref={messagesEndRef} />
+
+        {/* Scroll to bottom FAB */}
+        {showScrollBottom && (
+          <button onClick={handleScrollToBottom}
+            className="sticky bottom-4 left-1/2 -translate-x-1/2 z-10 w-10 h-10 rounded-full bg-[var(--bg-surface)] border border-[var(--border)] shadow-lg flex items-center justify-center hover:bg-[var(--hover)] transition-all animate-scale-in">
+            <ChevronDown className="w-5 h-5 text-[var(--text-secondary)]" />
+          </button>
+        )}
       </div>
 
       {/* Reply banner */}
@@ -629,7 +930,18 @@ export default function ChatArea() {
         </div>
       )}
 
+      {/* Voice Recorder */}
+      {showVoiceRecorder && (
+        <div className="px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-surface)] animate-fade-in">
+          <VoiceRecorder
+            onSend={handleSendVoice}
+            onCancel={() => setShowVoiceRecorder(false)}
+          />
+        </div>
+      )}
+
       {/* Input area */}
+      {!showVoiceRecorder && (
       <div className="px-4 pb-4 pt-2.5 flex-shrink-0 chat-input-bar">
         <div className="flex items-end gap-2.5">
           <div className="flex items-center gap-0.5 pb-0.5">
@@ -665,10 +977,18 @@ export default function ChatArea() {
             <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="btn-icon">
               {isUploading ? <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /> : <Paperclip className="w-5 h-5" />}
             </button>
+            <button onClick={() => setShowGifPanel(!showGifPanel)} className="btn-icon" title="GIF">
+              <span className="text-xs font-bold">GIF</span>
+            </button>
+            {conversation?.type === 'group' && (
+              <button onClick={() => setShowPollModal(true)} className="btn-icon" title="Create poll">
+                <BarChart3 className="w-5 h-5" />
+              </button>
+            )}
           </div>
 
           <div className="flex-1 min-w-0">
-            <textarea value={input} onChange={(e) => { setInput(e.target.value); handleTyping(); }} onKeyDown={handleKeyDown}
+            <textarea ref={textareaRef} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown}
               className="input-field resize-none !rounded-2xl !py-2.5 !border-[var(--border)]"
               placeholder="Type a message..." rows={1}
               style={{ height: `${Math.min(Math.max(40, input.split('\n').length * 22 + 18), 120)}px` }} />
@@ -681,13 +1001,14 @@ export default function ChatArea() {
                 <Send className="w-[18px] h-[18px] ml-0.5" />
               </button>
             ) : (
-              <button className="btn-icon">
+              <button onClick={() => setShowVoiceRecorder(true)} className="btn-icon" title="Record voice message">
                 <Mic className="w-5 h-5" />
               </button>
             )}
           </div>
         </div>
       </div>
+      )}
 
       {/* Enhanced Context menu */}
       {contextMenu && (
@@ -703,7 +1024,7 @@ export default function ChatArea() {
           onCopy={() => { handleCopyMessage(contextMenu.message); setContextMenu(null); }}
           onForward={() => { handleForwardSingle(contextMenu.message); setContextMenu(null); }}
           onStar={() => { toggleStarMessage(contextMenu.message.id); setContextMenu(null); toast.success(starredMessages.has(contextMenu.message.id) ? 'Unstarred' : 'Starred'); }}
-          onPin={() => { activeConversation && togglePinMessage(activeConversation, contextMenu.message.id); setContextMenu(null); toast.success(currentPinnedMessageIds.includes(contextMenu.message.id) ? 'Unpinned' : 'Pinned'); }}
+          onPin={() => { if (activeConversation) { togglePinMessage(activeConversation, contextMenu.message.id); } setContextMenu(null); toast.success(currentPinnedMessageIds.includes(contextMenu.message.id) ? 'Unpinned' : 'Pinned'); }}
           onEdit={() => { setEditingMessage(contextMenu.message); setContextMenu(null); }}
           onSelect={() => { setSelectionMode(true); setSelectedMessages(new Set([contextMenu.message.id])); setContextMenu(null); }}
           onDeleteForMe={() => handleDeleteWithConfirm(contextMenu.message.id, false)}
@@ -845,7 +1166,7 @@ export default function ChatArea() {
                   <p className="text-sm text-[var(--text-primary)] line-clamp-3">{msg.content || '🔒 Encrypted message'}</p>
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-[10px] text-[var(--text-muted)]">{formatMessageTime(msg.created_at)}</span>
-                    <button onClick={() => { activeConversation && togglePinMessage(activeConversation, msg.id); }}
+                    <button onClick={() => { if (activeConversation) { togglePinMessage(activeConversation, msg.id); } }}
                       className="text-xs text-[var(--danger)] hover:underline">Unpin</button>
                   </div>
                 </div>
@@ -854,19 +1175,47 @@ export default function ChatArea() {
           </div>
         </div>
       )}
+
+      {/* GIF Panel */}
+      {showGifPanel && (
+        <div className="absolute bottom-20 left-4 z-30">
+          <GifPanel onSelect={handleGifSelect} onClose={() => setShowGifPanel(false)} />
+        </div>
+      )}
+
+      {/* Mention Autocomplete */}
+      {mentionQuery !== null && groupMembers.length > 0 && (
+        <MentionAutocomplete
+          members={groupMembers}
+          query={mentionQuery}
+          position={mentionPosition}
+          onSelect={handleMentionSelect}
+          onClose={() => setMentionQuery(null)}
+        />
+      )}
+
+      {/* Poll Create Modal */}
+      {showPollModal && activeConversation && (
+        <PollCreateModal
+          conversationId={activeConversation}
+          onClose={() => setShowPollModal(false)}
+          onCreated={() => { setShowPollModal(false); }}
+        />
+      )}
     </div>
   );
 }
 
 /* ── Message Bubble ── */
 
-function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPreview, onDownload, allMessages, onRetry, isStarred, isPinned, selectionMode, isSelected, onToggleSelect }: {
+function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPreview, onDownload, allMessages, onRetry, isStarred, isPinned, selectionMode, isSelected, onToggleSelect, isHighlighted }: {
   message: Message; isOwn: boolean; showName: boolean;
   onReply: () => void; onContextMenu: (e: React.MouseEvent) => void;
   onPreview: (d: FileData) => void; onDownload: (d: FileData) => void;
   allMessages: Message[]; onRetry: (tempId: string) => void;
   isStarred: boolean; isPinned: boolean;
   selectionMode: boolean; isSelected: boolean; onToggleSelect: () => void;
+  isHighlighted?: boolean;
 }) {
   const [showActions, setShowActions] = useState(false);
   const isFileMessage = message.message_type === 'file' || message.message_type === 'image';
@@ -911,6 +1260,7 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
       isOwn ? 'animate-msg-in-right' : 'animate-msg-in-left',
       selectionMode && 'cursor-pointer',
       isSelected && 'bg-[var(--accent-subtle)] rounded-lg -mx-2 px-2 py-0.5',
+      isHighlighted && 'bg-[var(--accent-subtle)] rounded-lg -mx-2 px-2 py-1 transition-all duration-1000',
     )}
       onContextMenu={selectionMode ? undefined : onContextMenu}
       onMouseEnter={() => setShowActions(true)} onMouseLeave={() => setShowActions(false)}
@@ -1070,12 +1420,39 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
               </div>
             )}
 
-            <p className="leading-relaxed whitespace-pre-wrap break-words">
+            <div className="leading-relaxed whitespace-pre-wrap break-words">
               {message.content && !isValidEncryptedMessage(message.content)
-                ? message.content
+                ? (() => {
+                    try {
+                      const parsed = JSON.parse(message.content);
+                      if (parsed.type === 'gif' && parsed.url) {
+                        return (
+                          <div className="rounded-lg overflow-hidden max-w-[280px]">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={parsed.previewUrl || parsed.url} alt={parsed.title || 'GIF'} className="w-full rounded-lg" loading="lazy" />
+                            <span className="text-[9px] opacity-40 mt-0.5 block">via GIPHY</span>
+                          </div>
+                        );
+                      }
+                      if (parsed.type === 'poll' && parsed.pollId) {
+                        return <PollBubble pollId={parsed.pollId} isOwn={isOwn} />;
+                      }
+                    } catch { /* not JSON, render as text */ }
+                    // Render @mentions with highlight
+                    const mentionRegex = /@(\w+)/g;
+                    const parts = message.content.split(mentionRegex);
+                    if (parts.length > 1) {
+                      return parts.map((part: string, i: number) => 
+                        i % 2 === 1 
+                          ? <span key={i} className="text-[var(--accent)] font-semibold cursor-pointer">@{part}</span>
+                          : <span key={i}>{part}</span>
+                      );
+                    }
+                    return message.content;
+                  })()
                 : <span className="italic opacity-70 flex items-center gap-1"><Lock className="w-3 h-3 inline" /> Encrypted message</span>
               }
-            </p>
+            </div>
 
             <div className={cn('flex items-center gap-1 mt-0.5 justify-end')}>
               {isPinned && <Pin className={cn('w-3 h-3', isOwn ? 'text-white/50' : 'text-[var(--accent)]')} />}

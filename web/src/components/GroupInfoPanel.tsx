@@ -3,10 +3,11 @@
 import { useState, useEffect } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useCryptoStore } from '@/stores/cryptoStore';
 import { getInitials, cn, getAvatarColor } from '@/lib/utils';
 import {
   X, Users, UserPlus, Crown, Loader2,
-  Trash2, LogOut, Search, Edit3, Check
+  Trash2, LogOut, Search, Edit3, Check, Shield, ShieldOff,
 } from 'lucide-react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
@@ -119,12 +120,17 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
 
   const handleAddMember = async (userId: string) => {
     setIsAddingMember(true);
+    const convId = group?.conversation_id; // Capture before async ops
     try {
       await api.post(`/groups/${groupId}/members`, { user_ids: [userId] });
       await fetchGroup();
       setSearchQuery('');
       setSearchResults([]);
       toast.success('Member added');
+      // Trigger key distribution for the new member
+      if (convId) {
+        useCryptoStore.getState().handleMemberChange(convId, 'member_added').catch(() => {});
+      }
     } catch {
       toast.error('Failed to add member');
     } finally {
@@ -133,11 +139,16 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
   };
 
   const handleRemoveMember = async (userId: string) => {
+    const convId = group?.conversation_id; // Capture before async ops
     try {
       await api.delete(`/groups/${groupId}/members/${userId}`);
       setGroup(prev => prev ? { ...prev, members: prev.members.filter(m => m.user_id !== userId) } : prev);
       fetchConversations();
       toast.success('Member removed');
+      // Trigger key rotation (removed member can no longer decrypt future messages)
+      if (convId) {
+        useCryptoStore.getState().handleMemberChange(convId, 'member_removed').catch(() => {});
+      }
     } catch {
       toast.error('Failed to remove member');
     }
@@ -146,6 +157,12 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
   const handleLeaveGroup = async () => {
     if (!user?.id) return;
     try {
+      // Clean up sender keys before leaving
+      if (group?.conversation_id) {
+        try {
+          await api.delete(`/keys/group/${group.conversation_id}/sender-keys`);
+        } catch { /* non-fatal */ }
+      }
       await api.delete(`/groups/${groupId}/members/${user.id}`);
       fetchConversations();
       toast.success('Left group');
@@ -163,6 +180,20 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
       onClose();
     } catch {
       toast.error('Failed to delete group');
+    }
+  };
+
+  const handleToggleAdmin = async (memberId: string, currentRole: string) => {
+    const newRole = currentRole === 'admin' ? 'member' : 'admin';
+    try {
+      await api.put(`/groups/${groupId}/members/${memberId}`, { role: newRole });
+      setGroup(prev => prev ? {
+        ...prev,
+        members: prev.members.map(m => m.user_id === memberId ? { ...m, role: newRole } : m),
+      } : prev);
+      toast.success(newRole === 'admin' ? 'Promoted to admin' : 'Demoted to member');
+    } catch {
+      toast.error('Failed to update member role');
     }
   };
 
@@ -339,13 +370,24 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
                       <span className="text-[11px] text-[var(--text-muted)]">@{member.username}</span>
                     </div>
                     {isAdmin && !isMe && (
-                      <button
-                        onClick={() => handleRemoveMember(member.user_id)}
-                        className="btn-icon w-7 h-7 opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="Remove member"
-                      >
-                        <Trash2 className="w-3.5 h-3.5 text-[var(--danger)]" />
-                      </button>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleToggleAdmin(member.user_id, member.role)}
+                          className="btn-icon w-7 h-7"
+                          title={member.role === 'admin' ? 'Demote to member' : 'Promote to admin'}
+                        >
+                          {member.role === 'admin'
+                            ? <ShieldOff className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                            : <Shield className="w-3.5 h-3.5 text-[var(--accent)]" />}
+                        </button>
+                        <button
+                          onClick={() => handleRemoveMember(member.user_id)}
+                          className="btn-icon w-7 h-7"
+                          title="Remove member"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-[var(--danger)]" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 );

@@ -1,0 +1,122 @@
+[
+  {
+    "id": "b3799d9e-716a-4900-8d47-74912248e58e",
+    "reporter_id": "9fb5e1ef-a972-42b1-a088-bca3778d9568",
+    "reported_user_id": "1c085f06-26d5-43c7-8a0d-bec8ee8b799f",
+    "message_id": null,
+    "reason": "spam",
+    "details": "This user is sending spam messages",
+    "created_at": "2026-02-10T16:58:19.837Z",
+    "status": "pending"
+  },
+  {
+    "id": "9d4a7b11-f544-48b6-992a-4e4ea48b1f24",
+    "reporter_id": "84c3e945-ef71-4afd-8c32-e6917e3ca297",
+    "reported_user_id": null,
+    "message_id": "bc213368-0e32-4dd7-b7d2-bbc5ca9eb338",
+    "reason": "harassment",
+    "details": "Inappropriate content",
+    "created_at": "2026-02-10T16:58:19.840Z",
+    "status": "pending"
+  },
+  {
+    "id": "851da8cc-695d-477c-a99e-d6d627dcc93f",
+    "reporter_id": "3bd15e21-d350-49cd-8f25-8fec4d9332aa",
+    "reported_user_id": "198232b8-fd89-4a05-b1af-a78ff7127a7f",
+    "message_id": null,
+    "reason": "hate_speech",
+    "details": null,
+    "created_at": "2026-02-10T16:58:19.843Z",
+    "status": "pending"
+  },
+  {
+    "id": "f8e07d03-1bd9-4360-a275-6ec57728e19f",
+    "reporter_id": "3bd15e21-d350-49cd-8f25-8fec4d9332aa",
+    "reported_user_id": "198232b8-fd89-4a05-b1af-a78ff7127a7f",
+    "message_id": null,
+    "reason": "inappropriate",
+    "details": null,
+    "created_at": "2026-02-10T16:58:19.844Z",
+    "status": "pending"
+  },
+  {
+    "id": "9b596bc4-1500-465d-bdd8-2c35385960c2",
+    "reporter_id": "3bd15e21-d350-49cd-8f25-8fec4d9332aa",
+    "reported_user_id": "198232b8-fd89-4a05-b1af-a78ff7127a7f",
+    "message_id": null,
+    "reason": "impersonation",
+    "details": null,
+    "created_at": "2026-02-10T16:58:19.846Z",
+    "status": "pending"
+  },
+  {
+    "id": "ff10544f-b1f6-4880-b517-04a457050691",
+    "reporter_id": "3bd15e21-d350-49cd-8f25-8fec4d9332aa",
+    "reported_user_id": "198232b8-fd89-4a05-b1af-a78ff7127a7f",
+    "message_id": null,
+    "reason": "other",
+    "details": null,
+    "created_at": "2026-02-10T16:58:19.852Z",
+    "status": "pending"
+  },
+  {
+    "id": "54c46613-bc0f-4d2a-a658-9ead4e064e1c",
+    "reporter_id": "0e174cf1-97f9-45e8-bd56-8d420091c91f",
+    "reported_user_id": "6837eb0d-3271-45b0-a2b2-f09350b4af5b",
+    "message_id": null,
+    "reason": "spam",
+    "details": "This user is sending spam messages",
+    "created_at": "2026-02-10T16:59:10.662Z",
+    "status": "pending"
+  },
+  {
+    "id": "b9484908-8ff3-441c-bc30-f1dc8f64bf55",
+    "reporter_id": "8fd7eba1-ff95-4d3b-9c03-2829e79055a2",
+    "reported_user_id": null,
+    "message_id": "3f1cb7fc-a68c-4b6c-8cc3-69f54023eaa3",
+    "reason": "harassment",
+    "details": "Inappropriate content",
+    "created_at": "2026-02-10T16:59:10.663Z",
+    "status": "pending"
+  },
+  {
+    "id": "f0a4c36d-2588-41b7-8ebb-1b7255beae25",
+    "reporter_id": "f00e22cf-5427-45ab-99db-351e63298425",
+    "reported_user_id": "fe84bacd-0dfe-4a8f-a55b-6d333910e867",
+    "message_id": null,
+    "reason": "hate_speech",
+    "details": null,
+    "created_at": "2026-02-10T16:59:10.664Z",
+    "status": "pending"
+  },
+  {
+    "id": "e3404d63-4942-4a8a-a40e-d74d328b841a",
+    "reporter_id": "f00e22cf-5427-45ab-99db-351e63298425",
+    "reported_user_id": "fe84bacd-0dfe-4a8f-a55b-6d333910e867",
+    "message_id": null,
+    "reason": "inappropriate",
+    "details": null,
+    "created_at": "2026-02-10T16:59:10.665Z",
+    "status": "pending"
+  },
+  {
+    "id": "0575d660-c7d8-45eb-b8c8-d8b1a6f08fcc",
+    "reporter_id": "f00e22cf-5427-45ab-99db-351e63298425",
+    "reported_user_id": "fe84bacd-0dfe-4a8f-a55b-6d333910e867",
+    "message_id": null,
+    "reason": "impersonation",
+    "details": null,
+    "created_at": "2026-02-10T16:59:10.666Z",
+    "status": "pending"
+  },
+  {
+    "id": "adf302f5-1bfd-4dbc-924b-826c4075179f",
+    "reporter_id": "f00e22cf-5427-45ab-99db-351e63298425",
+    "reported_user_id": "fe84bacd-0dfe-4a8f-a55b-6d333910e867",
+    "message_id": null,
+    "reason": "other",
+    "details": null,
+    "created_at": "2026-02-10T16:59:10.667Z",
+    "status": "pending"
+  }
+]

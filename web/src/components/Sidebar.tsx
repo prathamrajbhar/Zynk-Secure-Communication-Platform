@@ -1,18 +1,19 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, Conversation } from '@/stores/chatStore';
-import { useUIStore } from '@/stores/uiStore';
+import { useUIStore, SidebarFilter } from '@/stores/uiStore';
 import { formatTime, getInitials, formatLastMessage, getAvatarColor } from '@/lib/utils';
 import logger from '@/lib/logger';
 import {
   MessageCircle, Search, Settings, Plus, Users, LogOut,
   Moon, Sun, MoreVertical, X, File as FileIcon, Image as ImageIcon,
-  MessageSquare, Pin, BellOff, Archive,
+  MessageSquare, Pin, BellOff, Archive, Pencil,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import CallLogsPanel from './CallLogsPanel';
 import ContactsPanel from './ContactsPanel';
 import ChatContextMenu from './ChatContextMenu';
+import { SkeletonConversationList } from './Skeletons';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import Fuse from 'fuse.js';
@@ -23,8 +24,9 @@ export default function Sidebar() {
     pinnedChats, mutedChats, archivedChats,
     togglePinChat, toggleMuteChat, toggleArchiveChat,
     markConversationRead, markConversationUnread, deleteConversation, clearChatHistory,
+    drafts, isLoadingConversations,
   } = useChatStore();
-  const { theme, toggleTheme, setShowSettings, setShowNewChat, setShowGroupCreate, setShowProfile, sidebarTab, setSidebarTab } = useUIStore();
+  const { theme, toggleTheme, setShowSettings, setShowNewChat, setShowGroupCreate, setShowProfile, sidebarTab, setSidebarTab, sidebarFilter, setSidebarFilter } = useUIStore();
   const [search, setSearch] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -37,7 +39,7 @@ export default function Sidebar() {
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const fuseConversations = useMemo(() => new Fuse(conversations, {
-    keys: ['other_user.display_name', 'other_user.username', 'group_info.name', 'last_message'],
+    keys: ['other_user.display_name', 'other_user.username', 'group_info.name', 'last_message_decrypted'],
     threshold: 0.4, distance: 100,
   }), [conversations]);
 
@@ -51,6 +53,13 @@ export default function Sidebar() {
       result = result.filter(c => archivedChats.has(c.id));
     }
 
+    // Apply sidebar filter
+    if (sidebarFilter === 'unread') {
+      result = result.filter(c => (c.unread_count || 0) > 0);
+    } else if (sidebarFilter === 'groups') {
+      result = result.filter(c => c.type === 'group');
+    }
+
     // Sort: pinned first, then by last message time
     result = [...result].sort((a, b) => {
       const aPinned = pinnedChats.has(a.id) ? 1 : 0;
@@ -62,7 +71,7 @@ export default function Sidebar() {
     });
 
     return result;
-  }, [search, conversations, fuseConversations, pinnedChats, archivedChats, showArchived]);
+  }, [search, conversations, fuseConversations, pinnedChats, archivedChats, showArchived, sidebarFilter]);
 
   const archivedCount = useMemo(() => conversations.filter(c => archivedChats.has(c.id)).length, [conversations, archivedChats]);
 
@@ -97,13 +106,32 @@ export default function Sidebar() {
     searchTimeoutRef.current = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const [peopleRes, messagesRes] = await Promise.all([
-          api.get(`/users/search?query=${search}`),
-          api.post('/messages/search', { query: search })
-        ]);
+        // Search people via server (not E2EE)
+        const peopleRes = await api.get(`/users/search?query=${search}`);
         const existingUserIds = new Set(conversations.map(c => c.other_user?.user_id).filter(Boolean));
         setSearchPeople((peopleRes.data.users || []).filter((u: { user_id: string }) => !existingUserIds.has(u.user_id)));
-        setSearchGlobalMessages(messagesRes.data.results || []);
+
+        // Search messages locally on decrypted content (server can't search E2EE)
+        const allMessages = useChatStore.getState().messages;
+        const query = search.toLowerCase();
+        const localResults: typeof searchGlobalMessages = [];
+        for (const convId in allMessages) {
+          for (const m of allMessages[convId]) {
+            const text = (m.content || '').toLowerCase();
+            if (text.includes(query)) {
+              localResults.push({
+                message_id: m.id,
+                conversation_id: m.conversation_id,
+                snippet: (m.content || '').slice(0, 100),
+                message_type: m.message_type,
+                sender_username: m.sender_username || '',
+                sender_display_name: m.sender_display_name,
+                created_at: m.created_at,
+              });
+            }
+          }
+        }
+        setSearchGlobalMessages(localResults.slice(0, 20));
       } catch (error) { logger.error('Search failed:', error); }
       finally { setIsSearching(false); }
     }, 400);
@@ -228,10 +256,33 @@ export default function Sidebar() {
         ))}
       </div>
 
+      {/* ── Conversation Filters ── */}
+      {sidebarTab === 'chats' && !search && (
+        <div className="flex gap-1.5 px-3 pb-2 flex-shrink-0">
+          {([
+            { key: 'all' as SidebarFilter, label: 'All' },
+            { key: 'unread' as SidebarFilter, label: 'Unread' },
+            { key: 'groups' as SidebarFilter, label: 'Groups' },
+          ]).map(f => (
+            <button key={f.key} onClick={() => setSidebarFilter(f.key)}
+              className={cn(
+                'px-3 py-1 text-[11px] font-semibold rounded-full transition-all',
+                sidebarFilter === f.key
+                  ? 'bg-[var(--accent)] text-white shadow-sm'
+                  : 'bg-[var(--bg-wash)] text-[var(--text-muted)] hover:bg-[var(--hover)] hover:text-[var(--text-secondary)]'
+              )}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── Content ── */}
       {sidebarTab === 'chats' ? (
         <div className="flex-1 overflow-y-auto scroll-thin">
-          {search && filteredConversations.length === 0 && searchPeople.length === 0 && searchFiles.length === 0 && searchTextMessages.length === 0 ? (
+          {isLoadingConversations && conversations.length === 0 ? (
+            <SkeletonConversationList />
+          ) : search && filteredConversations.length === 0 && searchPeople.length === 0 && searchFiles.length === 0 && searchTextMessages.length === 0 ? (
             <EmptySearch isSearching={isSearching} />
           ) : (
             <div className="pb-20">
@@ -245,6 +296,7 @@ export default function Sidebar() {
                       isOnline={conv.other_user ? onlineUsers.has(conv.other_user.user_id) : false}
                       isPinned={pinnedChats.has(conv.id)}
                       isMuted={mutedChats.has(conv.id)}
+                      draft={drafts[conv.id]}
                       onClick={() => { setActiveConversation(conv.id); setSearch(''); }}
                       onContextMenu={(e) => handleChatContextMenu(e, conv)} />
                   ))}
@@ -353,6 +405,7 @@ export default function Sidebar() {
           onClose={() => setChatContextMenu(null)}
           onPin={() => { togglePinChat(chatContextMenu.conversation.id); toast.success(pinnedChats.has(chatContextMenu.conversation.id) ? 'Unpinned' : 'Pinned'); }}
           onMute={() => { toggleMuteChat(chatContextMenu.conversation.id); toast.success(mutedChats.has(chatContextMenu.conversation.id) ? 'Unmuted' : 'Muted'); }}
+          onMuteDuration={(duration: string) => { useChatStore.getState().muteChat(chatContextMenu.conversation.id, duration); toast.success(`Muted for ${duration}`); }}
           onArchive={() => { toggleArchiveChat(chatContextMenu.conversation.id); toast.success(archivedChats.has(chatContextMenu.conversation.id) ? 'Unarchived' : 'Archived'); }}
           onMarkReadUnread={() => {
             const conv = chatContextMenu.conversation;
@@ -445,15 +498,17 @@ function EmptySearch({ isSearching }: { isSearching: boolean }) {
   );
 }
 
-function ConversationItem({ conversation, isActive, isOnline, isPinned, isMuted, onClick, onContextMenu }: {
+function ConversationItem({ conversation, isActive, isOnline, isPinned, isMuted, draft, onClick, onContextMenu }: {
   conversation: Conversation; isActive: boolean; isOnline: boolean;
-  isPinned: boolean; isMuted: boolean;
+  isPinned: boolean; isMuted: boolean; draft?: string;
   onClick: () => void; onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const name = conversation.type === 'one_to_one'
     ? (conversation.other_user?.display_name || conversation.other_user?.username || 'Unknown')
     : (conversation.group_info?.name || 'Group');
-  const lastMessage = formatLastMessage(conversation.last_message_decrypted || conversation.last_message || '', 36) || 'No messages yet';
+  const lastMessage = draft
+    ? undefined // will use draft display below
+    : formatLastMessage(conversation.last_message_decrypted || conversation.last_message || '', 36) || 'No messages yet';
   const time = conversation.last_message_at ? formatTime(conversation.last_message_at) : '';
   const hasUnread = conversation.unread_count > 0;
   const color = conversation.type === 'group' ? 'bg-violet-500' : getAvatarColor(name);
@@ -488,9 +543,16 @@ function ConversationItem({ conversation, isActive, isOnline, isPinned, isMuted,
           </span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <span className={cn('text-[12.5px] truncate', hasUnread ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]')}>
-            {lastMessage}
-          </span>
+          {draft ? (
+            <span className="text-[12.5px] truncate text-[var(--accent)] italic flex items-center gap-1">
+              <Pencil className="w-3 h-3 flex-shrink-0" />
+              {draft.length > 36 ? draft.slice(0, 36) + '...' : draft}
+            </span>
+          ) : (
+            <span className={cn('text-[12.5px] truncate', hasUnread ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]')}>
+              {lastMessage}
+            </span>
+          )}
           {hasUnread && (
             <span className="flex-shrink-0 min-w-[20px] h-[20px] bg-[var(--accent)] text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
               {conversation.unread_count > 99 ? '99+' : conversation.unread_count}

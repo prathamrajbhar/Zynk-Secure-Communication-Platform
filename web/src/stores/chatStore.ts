@@ -3,7 +3,7 @@ import api from '@/lib/api';
 import logger from '@/lib/logger';
 import { getSocket, isConnected, SOCKET_EVENTS } from '@/lib/socket';
 import { useCryptoStore } from '@/stores/cryptoStore';
-import { isValidEncryptedMessage } from '@/lib/crypto';
+import { isGroupEncryptedMessage, isEncryptedMessage } from '@/lib/crypto';
 
 export interface Message {
   id: string;
@@ -68,6 +68,7 @@ interface ChatState {
   onlineUsers: Set<string>;
   isLoadingConversations: boolean;
   isLoadingMessages: boolean;
+  hasMoreMessages: Record<string, boolean>;
 
   // Message queue for offline/failed messages
   pendingMessages: Map<string, PendingMessage>;
@@ -75,9 +76,13 @@ interface ChatState {
   // Track timeouts for optimistic sends to avoid false failures
   sendTimeouts: Map<string, ReturnType<typeof setTimeout>>;
 
+  // Draft messages per conversation
+  drafts: Record<string, string>;
+
   // Chat management state (client-side)
   pinnedChats: Set<string>;
   mutedChats: Set<string>;
+  muteDurations: Record<string, { until: number | null; duration: string }>;
   archivedChats: Set<string>;
   starredMessages: Set<string>;
   pinnedMessages: Record<string, string[]>; // conversationId -> messageId[]
@@ -85,7 +90,12 @@ interface ChatState {
   // Actions
   fetchConversations: () => Promise<void>;
   fetchMessages: (conversationId: string) => Promise<void>;
+  fetchOlderMessages: (conversationId: string) => Promise<void>;
   setActiveConversation: (id: string | null) => void;
+
+  // Drafts
+  setDraft: (conversationId: string, text: string) => void;
+  getDraft: (conversationId: string) => string;
 
   // Enhanced message sending with optimistic updates
   sendMessage: (conversationId: string | null, recipientId: string | null, content: string, messageType?: string) => void;
@@ -109,6 +119,7 @@ interface ChatState {
   // Chat management actions
   togglePinChat: (conversationId: string) => void;
   toggleMuteChat: (conversationId: string) => void;
+  muteChat: (conversationId: string, duration: string) => void;
   toggleArchiveChat: (conversationId: string) => void;
   toggleStarMessage: (messageId: string) => void;
   togglePinMessage: (conversationId: string, messageId: string) => void;
@@ -119,7 +130,7 @@ interface ChatState {
 }
 
 // Generate temporary ID for optimistic messages
-const generateTempId = () => `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+const generateTempId = () => `temp_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
@@ -129,15 +140,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   onlineUsers: new Set(),
   isLoadingConversations: false,
   isLoadingMessages: false,
+  hasMoreMessages: {},
   pendingMessages: new Map(),
   failedMessages: new Map(),
   sendTimeouts: new Map(),
   lastTypingSent: 0,
   isTypingSent: false,
 
+  // Drafts from localStorage
+  drafts: JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-drafts') || '{}' : '{}'),
+
   // Chat management state — hydrate from localStorage
   pinnedChats: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-pinned-chats') || '[]' : '[]')),
   mutedChats: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-muted-chats') || '[]' : '[]')),
+  muteDurations: JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-mute-durations') || '{}' : '{}'),
   archivedChats: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-archived-chats') || '[]' : '[]')),
   starredMessages: new Set<string>(JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-starred-messages') || '[]' : '[]')),
   pinnedMessages: JSON.parse(typeof window !== 'undefined' ? localStorage.getItem('zynk-pinned-messages') || '{}' : '{}'),
@@ -154,7 +170,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         convs = await Promise.all(convs.map(async (c: Conversation) => {
           if (!c.last_message) return c;
           // Skip already-plain messages
-          if (!isValidEncryptedMessage(c.last_message)) {
+          if (!isEncryptedMessage(c.last_message)) {
             // Might be raw file JSON (non-encrypted file metadata)
             try {
               const parsed = JSON.parse(c.last_message);
@@ -165,9 +181,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return c;
           }
           try {
-            const partnerId = c.type === 'one_to_one' ? c.other_user?.user_id : null;
-            if (!partnerId) return c;
-            const decrypted = await cryptoStore.decrypt(partnerId, c.last_message);
+            let decrypted: string;
+            if (c.type === 'one_to_one') {
+              const partnerId = c.other_user?.user_id;
+              if (!partnerId) return c;
+              decrypted = await cryptoStore.decrypt(partnerId, c.last_message);
+            } else if (isGroupEncryptedMessage(c.last_message)) {
+              // Group E2EE: use sender ID from conversation metadata
+              const senderId = c.last_message_sender_id;
+              if (!senderId) return c; // Cannot decrypt without sender ID
+              decrypted = await cryptoStore.decryptGroup(senderId, c.id, c.last_message);
+            } else {
+              return c;
+            }
             // Check if decrypted content is file metadata JSON
             try {
               const parsed = JSON.parse(decrypted);
@@ -219,12 +245,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (cryptoStore.isInitialized && resolvedPartnerId) {
         messages = await Promise.all(messages.map(async (m: Message) => {
           // Skip messages that already have decrypted content
-          if (m.content && !isValidEncryptedMessage(m.content)) return m;
+          if (m.content && !isEncryptedMessage(m.content)) return m;
           // Try to decrypt any message with encrypted_content (text, file, image)
           if (!m.encrypted_content) return m;
 
-          // For group conversations, content is not E2EE encrypted — use as-is
+          // For group conversations, use group E2EE (sender keys)
           if (!isOneToOne) {
+            if (isGroupEncryptedMessage(m.encrypted_content)) {
+              try {
+                const decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
+                return { ...m, content: decrypted };
+              } catch {
+                return { ...m, content: '[Cannot decrypt message]' };
+              }
+            }
             return { ...m, content: m.encrypted_content };
           }
 
@@ -236,12 +270,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }));
       } else if (!isOneToOne) {
-        // Group conversation with no crypto — use encrypted_content as plain content
-        messages = messages.map((m: Message) => {
-          if (m.content && !isValidEncryptedMessage(m.content)) return m;
+        // Group conversation — try group decryption or use raw content
+        messages = await Promise.all(messages.map(async (m: Message) => {
+          if (m.content && !isEncryptedMessage(m.content)) return m;
           if (!m.encrypted_content) return m;
+          if (cryptoStore.isInitialized && isGroupEncryptedMessage(m.encrypted_content)) {
+            try {
+              const decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
+              return { ...m, content: decrypted };
+            } catch {
+              return { ...m, content: '[Cannot decrypt message]' };
+            }
+          }
           return { ...m, content: m.encrypted_content };
-        });
+        }));
       }
 
       // Merge: keep any optimistic (pending) messages that aren't in the API response yet
@@ -252,6 +294,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const unconfirmedOptimistic = existingOptimistic.filter(m => !serverIds.has(m.id));
         return {
           messages: { ...state.messages, [conversationId]: [...messages, ...unconfirmedOptimistic] },
+          hasMoreMessages: { ...state.hasMoreMessages, [conversationId]: messages.length >= 50 },
         };
       });
     } catch (error) {
@@ -267,6 +310,77 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const socket = getSocket();
       socket?.emit(SOCKET_EVENTS.CONVERSATION_JOIN, { conversation_id: id });
       get().fetchMessages(id);
+    }
+  },
+
+  // Drafts
+  setDraft: (conversationId: string, text: string) => {
+    set(state => {
+      const updated = { ...state.drafts };
+      if (text.trim()) {
+        updated[conversationId] = text;
+      } else {
+        delete updated[conversationId];
+      }
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-drafts', JSON.stringify(updated));
+      return { drafts: updated };
+    });
+  },
+
+  getDraft: (conversationId: string) => {
+    return get().drafts[conversationId] || '';
+  },
+
+  // Fetch older messages (pagination)
+  fetchOlderMessages: async (conversationId: string) => {
+    const existing = get().messages[conversationId] || [];
+    if (existing.length === 0 || !get().hasMoreMessages[conversationId]) return;
+
+    const oldestMsg = existing.find(m => !m.isOptimistic);
+    if (!oldestMsg) return;
+
+    try {
+      const oldestTimestamp = Math.floor(new Date(oldestMsg.created_at).getTime() / 1000);
+      const res = await api.get(`/messages/${conversationId}?limit=50&before=${oldestTimestamp}`);
+      let olderMessages = res.data.messages || [];
+
+      // Decrypt
+      const cryptoStore = useCryptoStore.getState();
+      const conversation = get().conversations.find(c => c.id === conversationId);
+      const isOneToOne = conversation?.type === 'one_to_one';
+      const partnerId = isOneToOne ? conversation.other_user?.user_id : null;
+      const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+      const resolvedPartnerId = partnerId || (currentUserId ? olderMessages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
+
+      if (cryptoStore.isInitialized && resolvedPartnerId && isOneToOne) {
+        olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
+          if (m.content && !isEncryptedMessage(m.content)) return m;
+          if (!m.encrypted_content) return m;
+          try {
+            const decrypted = await cryptoStore.decrypt(resolvedPartnerId, m.encrypted_content);
+            return { ...m, content: decrypted };
+          } catch { return m; }
+        }));
+      } else if (!isOneToOne) {
+        olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
+          if (m.content && !isEncryptedMessage(m.content)) return m;
+          if (!m.encrypted_content) return m;
+          if (cryptoStore.isInitialized && isGroupEncryptedMessage(m.encrypted_content)) {
+            try {
+              const decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
+              return { ...m, content: decrypted };
+            } catch { return { ...m, content: '[Cannot decrypt message]' }; }
+          }
+          return { ...m, content: m.encrypted_content };
+        }));
+      }
+
+      set(state => ({
+        messages: { ...state.messages, [conversationId]: [...olderMessages, ...existing] },
+        hasMoreMessages: { ...state.hasMoreMessages, [conversationId]: olderMessages.length >= 50 },
+      }));
+    } catch (error) {
+      logger.error('Failed to fetch older messages:', error);
     }
   },
 
@@ -393,8 +507,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (cryptoStore.isInitialized && recipientId) {
             encryptedContent = await cryptoStore.encrypt(recipientId, content);
           } else if (!recipientId && conversation?.type === 'group') {
-            // Group messages: send without E2EE (group E2EE not implemented)
-            encryptedContent = content;
+            // Group E2EE: encrypt with sender key
+            if (cryptoStore.isInitialized) {
+              encryptedContent = await cryptoStore.encryptGroup(conversationId, content);
+            }
           } else if (!cryptoStore.isInitialized) {
             logger.error('[E2EE] Not initialized — refusing to send plaintext');
             get().markMessageFailed(tempId);
@@ -563,6 +679,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const cryptoStore = useCryptoStore.getState();
         if (cryptoStore.isInitialized && failed.recipientId) {
           encryptedContent = await cryptoStore.encrypt(failed.recipientId, failed.content);
+        } else if (cryptoStore.isInitialized && !failed.recipientId) {
+          // Group message — encrypt with sender key
+          encryptedContent = await cryptoStore.encryptGroup(failed.conversationId, failed.content);
         }
 
         socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
@@ -608,6 +727,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const cryptoStore = useCryptoStore.getState();
         if (cryptoStore.isInitialized && msg.recipientId) {
           encryptedContent = await cryptoStore.encrypt(msg.recipientId, msg.content);
+        } else if (cryptoStore.isInitialized && !msg.recipientId) {
+          // Group message — encrypt with sender key
+          encryptedContent = await cryptoStore.encryptGroup(msg.conversationId, msg.content);
         }
 
         socket.emit(SOCKET_EVENTS.MESSAGE_SEND, {
@@ -688,7 +810,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // CRITICAL: Preserve the optimistic plaintext if the broadcast doesn't
         // carry properly decrypted content
         const keepOldContent = oldMsg.isOptimistic && oldMsg.content &&
-          (!message.content || isValidEncryptedMessage(message.content));
+          (!message.content || isEncryptedMessage(message.content));
 
         updatedMessagesList[optimisticIndex] = {
           ...oldMsg,
@@ -817,9 +939,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   markConversationRead: (conversationId) => {
     const socket = getSocket();
-    if (!socket || !isConnected()) return;
 
-    socket.emit('conversation:read', { conversation_id: conversationId });
+    // Always emit via socket if connected
+    if (socket && isConnected()) {
+      socket.emit('conversation:read', { conversation_id: conversationId });
+    }
+
+    // Also call REST endpoint as reliable fallback
+    api.put(`/messages/conversations/${conversationId}/read-all`).catch((err) => {
+      logger.error('REST mark-read failed:', err);
+    });
 
     // Optimistically update local state
     set(state => {
@@ -895,7 +1024,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const updated = new Set(state.pinnedChats);
       if (updated.has(conversationId)) updated.delete(conversationId);
       else updated.add(conversationId);
-      if (typeof window !== 'undefined') localStorage.setItem('zynk-pinned-chats', JSON.stringify([...updated]));
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-pinned-chats', JSON.stringify(Array.from(updated)));
       return { pinnedChats: updated };
     });
   },
@@ -905,8 +1034,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const updated = new Set(state.mutedChats);
       if (updated.has(conversationId)) updated.delete(conversationId);
       else updated.add(conversationId);
-      if (typeof window !== 'undefined') localStorage.setItem('zynk-muted-chats', JSON.stringify([...updated]));
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-muted-chats', JSON.stringify(Array.from(updated)));
+      // Also clear mute duration if unmuting
+      if (!updated.has(conversationId)) {
+        const durations = { ...state.muteDurations };
+        delete durations[conversationId];
+        if (typeof window !== 'undefined') localStorage.setItem('zynk-mute-durations', JSON.stringify(durations));
+        return { mutedChats: updated, muteDurations: durations };
+      }
       return { mutedChats: updated };
+    });
+  },
+
+  muteChat: (conversationId: string, duration: string) => {
+    set(state => {
+      const updated = new Set(state.mutedChats);
+      updated.add(conversationId);
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-muted-chats', JSON.stringify(Array.from(updated)));
+
+      const durations = { ...state.muteDurations };
+      if (duration === 'forever') {
+        durations[conversationId] = { until: null, duration };
+      } else {
+        const ms: Record<string, number> = {
+          '1h': 3600000, '8h': 28800000, '1d': 86400000, '1w': 604800000,
+        };
+        durations[conversationId] = { until: Date.now() + (ms[duration] || 0), duration };
+      }
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-mute-durations', JSON.stringify(durations));
+      return { mutedChats: updated, muteDurations: durations };
     });
   },
 
@@ -915,7 +1071,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const updated = new Set(state.archivedChats);
       if (updated.has(conversationId)) updated.delete(conversationId);
       else updated.add(conversationId);
-      if (typeof window !== 'undefined') localStorage.setItem('zynk-archived-chats', JSON.stringify([...updated]));
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-archived-chats', JSON.stringify(Array.from(updated)));
       return { archivedChats: updated };
     });
   },
@@ -925,7 +1081,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const updated = new Set(state.starredMessages);
       if (updated.has(messageId)) updated.delete(messageId);
       else updated.add(messageId);
-      if (typeof window !== 'undefined') localStorage.setItem('zynk-starred-messages', JSON.stringify([...updated]));
+      if (typeof window !== 'undefined') localStorage.setItem('zynk-starred-messages', JSON.stringify(Array.from(updated)));
       return { starredMessages: updated };
     });
   },
@@ -951,10 +1107,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Find the conversation and recipient for encryption
       const allMessages = get().messages;
       let convId = '';
-      let foundMsg: Message | undefined;
       for (const cid in allMessages) {
         const msg = allMessages[cid].find(m => m.id === messageId);
-        if (msg) { convId = cid; foundMsg = msg; break; }
+        if (msg) { convId = cid; break; }
       }
 
       if (!convId) throw new Error('Message not found');
@@ -964,6 +1119,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (cryptoStore.isInitialized && recipientId) {
         encryptedContent = await cryptoStore.encrypt(recipientId, newContent);
+      } else if (cryptoStore.isInitialized && conversation?.type === 'group') {
+        encryptedContent = await cryptoStore.encryptGroup(convId, newContent);
       }
 
       await api.put(`/messages/${messageId}`, { encrypted_content: encryptedContent });
@@ -983,7 +1140,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteConversation: async (conversationId: string) => {
-    // Client-side: remove from conversations list and clear messages
+    // Optimistically remove from UI first
     set(state => {
       const updatedConversations = state.conversations.filter(c => c.id !== conversationId);
       const updatedMessages = { ...state.messages };
@@ -994,13 +1151,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeConversation: state.activeConversation === conversationId ? null : state.activeConversation,
       };
     });
+
+    // Call server to delete (leave) the conversation — marks all msgs deleted-for-me + removes participant
+    try {
+      await api.delete(`/messages/conversations/${conversationId}`);
+    } catch (err) {
+      logger.error('Failed to delete conversation on server:', err);
+      // Re-fetch conversations to restore state if server call fails
+      get().fetchConversations();
+    }
   },
 
   clearChatHistory: async (conversationId: string) => {
-    // Clear all messages from local state for this conversation
+    // Optimistically clear messages locally
     set(state => ({
       messages: { ...state.messages, [conversationId]: [] },
     }));
+
+    // Call server to mark all messages in this conversation as deleted-for-me
+    try {
+      await api.put(`/messages/conversations/${conversationId}/clear`);
+    } catch (err) {
+      logger.error('Failed to clear chat history on server:', err);
+    }
   },
 
   markConversationUnread: (conversationId: string) => {

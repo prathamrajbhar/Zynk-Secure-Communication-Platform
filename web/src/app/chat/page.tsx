@@ -7,7 +7,7 @@ import { useChatStore, type Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useCryptoStore } from '@/stores/cryptoStore';
-import { isValidEncryptedMessage } from '@/lib/crypto';
+import { isValidEncryptedMessage, isGroupEncryptedMessage } from '@/lib/crypto';
 import { connectSocket, disconnectSocket, SOCKET_EVENTS } from '@/lib/socket';
 import logger from '@/lib/logger';
 import Sidebar from '@/components/Sidebar';
@@ -17,6 +17,8 @@ import NewChatModal from '@/components/NewChatModal';
 import GroupCreateModal from '@/components/GroupCreateModal';
 import SettingsPanel from '@/components/SettingsPanel';
 import ProfilePanel from '@/components/ProfilePanel';
+import UserInfoPanel from '@/components/UserInfoPanel';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ConnectionBanner } from '@/components/ConnectionIndicator';
 import { useUIStore } from '@/stores/uiStore';
 import { Loader2 } from 'lucide-react';
@@ -36,7 +38,7 @@ import {
 export default function ChatPage() {
   const { isAuthenticated, isLoading, hydrate } = useAuthStore();
   const connectionStatus = useConnectionStore((state) => state.status);
-  const { showSettings, showNewChat, showGroupCreate, showProfile } = useUIStore();
+  const { showSettings, showNewChat, showGroupCreate, showProfile, showUserInfo, setShowUserInfo } = useUIStore();
   const router = useRouter();
 
   // Track previous connection status for toasts
@@ -143,11 +145,14 @@ export default function ChatPage() {
         try {
           const cs = useCryptoStore.getState();
           if (message.encrypted_content) {
-            // Check if message is actually E2EE encrypted
-            if (cs.isInitialized && isValidEncryptedMessage(message.encrypted_content)) {
+            if (cs.isInitialized && isGroupEncryptedMessage(message.encrypted_content)) {
+              // Group E2EE (v4 envelope) — decrypt with sender key
+              decryptedContent = await cs.decryptGroup(message.sender_id, message.conversation_id, message.encrypted_content);
+            } else if (cs.isInitialized && isValidEncryptedMessage(message.encrypted_content)) {
+              // 1:1 E2EE (v3 envelope)
               decryptedContent = await cs.decrypt(message.sender_id, message.encrypted_content);
-            } else if (!isValidEncryptedMessage(message.encrypted_content)) {
-              // Not encrypted (e.g. group message) — use raw content
+            } else if (!isValidEncryptedMessage(message.encrypted_content) && !isGroupEncryptedMessage(message.encrypted_content)) {
+              // Not encrypted — use raw content
               decryptedContent = message.encrypted_content;
             }
           }
@@ -275,16 +280,41 @@ export default function ChatPage() {
     });
 
     // Media state & renegotiation events
-    socket.on('call:media-state', (data) => {
+    socket.on(SOCKET_EVENTS.CALL_MEDIA_STATE, (data) => {
       useCallStore.getState().handleRemoteMediaState(data);
     });
 
-    socket.on('call:renegotiate', (data) => {
+    socket.on(SOCKET_EVENTS.CALL_RENEGOTIATE, (data) => {
       useCallStore.getState().handleRenegotiate(data);
     });
 
-    socket.on('call:renegotiate-answer', (data) => {
+    socket.on(SOCKET_EVENTS.CALL_RENEGOTIATE_ANSWER, (data) => {
       useCallStore.getState().handleRenegotiateAnswer(data);
+    });
+
+    // Group E2EE sender key events
+    socket.on(SOCKET_EVENTS.GROUP_SENDER_KEY_AVAILABLE, async (data) => {
+      // Another member distributed a new sender key — fetch it
+      const cs = useCryptoStore.getState();
+      if (cs.isInitialized && data.conversation_id) {
+        cs.fetchSenderKeyForUser(data.conversation_id, data.sender_id).catch(err => {
+          logger.error('[E2EE] Failed to fetch new sender key:', err);
+        });
+      }
+    });
+
+    socket.on(SOCKET_EVENTS.GROUP_KEY_ROTATION_NEEDED, async (data) => {
+      // A member change triggered key rotation — rotate own key and re-distribute
+      const cs = useCryptoStore.getState();
+      if (cs.isInitialized && data.conversation_id) {
+        const currentUser = useAuthStore.getState().user;
+        // Don't re-rotate if we triggered it
+        if (data.triggered_by !== currentUser?.id) {
+          cs.rotateGroupKey(data.conversation_id).catch(err => {
+            logger.error('[E2EE] Key rotation failed:', err);
+          });
+        }
+      }
     });
 
     return () => {
@@ -331,7 +361,22 @@ export default function ChatPage() {
 
       <div className="flex-1 flex min-h-0">
         <Sidebar />
-        <ChatArea />
+        <ErrorBoundary>
+          <ChatArea />
+        </ErrorBoundary>
+        {/* User Info Panel — right sidebar for 1:1 chats */}
+        {showUserInfo && (() => {
+          const chatStore = useChatStore.getState();
+          const conv = chatStore.conversations.find(c => c.id === chatStore.activeConversation);
+          if (!conv || conv.type !== 'one_to_one' || !conv.other_user) return null;
+          return (
+            <UserInfoPanel
+              userId={conv.other_user.user_id}
+              conversationId={conv.id}
+              onClose={() => setShowUserInfo(false)}
+            />
+          );
+        })()}
       </div>
 
       <CallOverlay />

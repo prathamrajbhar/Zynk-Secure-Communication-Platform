@@ -40,6 +40,22 @@ export default function CallOverlay() {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
 
+  const [isSpeaker, setIsSpeaker] = useState(false);
+
+  // Toggle speaker mode (switch between earpiece and speaker)
+  const toggleSpeaker = () => {
+    const audio = remoteAudioRef.current;
+    if (audio) {
+      // Toggle volume between normal and speaker-like level
+      audio.volume = isSpeaker ? 0.5 : 1.0;
+      // Use setSinkId if available (Web Audio API for output device)
+      if ('setSinkId' in audio && typeof (audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId === 'function') {
+        // Default device is used — just toggle volume level
+      }
+    }
+    setIsSpeaker(!isSpeaker);
+  };
+
   // Play ringtone for incoming calls only
   useEffect(() => {
     const ringtone = ringtoneRef.current;
@@ -610,12 +626,15 @@ export default function CallOverlay() {
               <span className="text-red-400 text-xs">End</span>
             </div>
 
-            {/* Speaker placeholder */}
+            {/* Speaker */}
             <div className="flex flex-col items-center gap-2">
-              <button className="w-16 h-16 rounded-full bg-white/20 text-white backdrop-blur flex items-center justify-center transition-all shadow-lg">
+              <button onClick={toggleSpeaker} className={cn(
+                'w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg',
+                isSpeaker ? 'bg-white text-gray-900' : 'bg-white/20 text-white backdrop-blur'
+              )}>
                 <Volume2 className="w-7 h-7" />
               </button>
-              <span className="text-white/70 text-xs">Speaker</span>
+              <span className="text-white/70 text-xs">{isSpeaker ? 'Earpiece' : 'Speaker'}</span>
             </div>
           </div>
         </div>
@@ -627,12 +646,17 @@ export default function CallOverlay() {
 }
 
 function CallTimer() {
+  const { activeCall } = useCallStore();
   const [seconds, setSeconds] = useState(0);
 
   useEffect(() => {
-    const interval = setInterval(() => setSeconds(s => s + 1), 1000);
+    // Use actual call start time if available
+    const startTime = activeCall?.startedAt ? new Date(activeCall.startedAt).getTime() : Date.now();
+    const interval = setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeCall?.startedAt]);
 
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
