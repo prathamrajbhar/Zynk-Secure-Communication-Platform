@@ -26,7 +26,7 @@ export default function MessageInfoModal({ isOpen, message, onClose }: MessageIn
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 animate-fade-in" onClick={onClose}>
-      <div className="bg-[var(--bg-surface)] rounded-2xl w-full max-w-sm shadow-overlay border border-[var(--border)] animate-scale-in overflow-hidden"
+      <div className="bg-[var(--bg-surface)] rounded-xl w-full max-w-sm shadow-overlay border border-[var(--border)] animate-scale-in overflow-hidden"
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}

@@ -100,6 +100,49 @@ function loadGroupReceivedKeysRaw(userId: string): Map<string, Map<string, Persi
   } catch { return new Map(); }
 }
 
+// ========== Initialization Deduplication & Ready Gate ==========
+
+/**
+ * Tracks the in-flight initialization promise so concurrent callers share the
+ * same init run and don't race against each other.
+ */
+let _initializationPromise: Promise<void> | null = null;
+
+/**
+ * Wait for the crypto store to become initialized.
+ * Returns `true` when ready, or `false` if the timeout is reached.
+ *
+ * Uses a Zustand subscription under the hood so it works even when called
+ * before `initialize()` has been invoked.
+ *
+ * @param timeoutMs  Maximum wait time (default 10 s).  Set to 0 for infinite.
+ */
+export function waitForCryptoReady(timeoutMs = 10_000): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (useCryptoStore.getState().isInitialized) {
+      resolve(true);
+      return;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const unsub = useCryptoStore.subscribe((state) => {
+      if (state.isInitialized) {
+        if (timer) clearTimeout(timer);
+        unsub();
+        resolve(true);
+      }
+    });
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        unsub();
+        resolve(false);
+      }, timeoutMs);
+    }
+  });
+}
+
 // ========== Store ==========
 
 interface GroupKeyEntry { keyB64: string; cryptoKey: CryptoKey; keyId: number }
@@ -149,16 +192,28 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
    * Initialize E2EE for the logged-in user.
    * Loads existing keys from localStorage or generates + uploads new ones.
    * Also restores persisted group sender keys.
+   *
+   * Safe to call concurrently — only one init runs at a time and all callers
+   * share the same in-flight promise.
    */
   initialize: async (userId: string) => {
     if (!userId) return;
-    logger.debug('[E2EE] Initializing for user:', userId);
 
     const state = get();
     if (state.isInitialized && state.userId === userId && state.privateKey) {
       logger.debug('[E2EE] Already initialized');
       return;
     }
+
+    // Dedup: if an init is already in-flight, just await it
+    if (_initializationPromise) {
+      await _initializationPromise;
+      return;
+    }
+
+    logger.debug('[E2EE] Initializing for user:', userId);
+
+    _initializationPromise = (async () => {
 
     // Try to load existing keys
     const existing = loadKeys(userId);
@@ -210,6 +265,14 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     } catch (err) {
       logger.error('[E2EE] Key generation/upload failed:', err);
       throw err;
+    }
+
+    })(); // end of _initializationPromise IIFE
+
+    try {
+      await _initializationPromise;
+    } finally {
+      _initializationPromise = null;
     }
   },
 
@@ -593,6 +656,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
    * Call clearKeys() explicitly to fully wipe keys (e.g., account deletion).
    */
   cleanup: () => {
+    _initializationPromise = null;
     set({
       isInitialized: false,
       userId: null,

@@ -70,7 +70,7 @@ export default function PollCreateModal({ conversationId, onClose, onCreated }: 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 animate-fade-in" onClick={onClose}>
-      <div className="bg-[var(--bg-surface)] rounded-2xl w-full max-w-md shadow-overlay border border-[var(--border)] animate-scale-in" onClick={e => e.stopPropagation()}>
+      <div className="bg-[var(--bg-surface)] rounded-xl w-full max-w-md shadow-overlay border border-[var(--border)] animate-scale-in" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
           <div className="flex items-center gap-2">

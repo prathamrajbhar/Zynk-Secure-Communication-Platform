@@ -111,7 +111,7 @@ export default function DeviceLimitModal({
       />
 
       {/* Modal */}
-      <div className="relative w-full max-w-lg bg-[var(--bg-surface)] rounded-2xl border border-[var(--border)] shadow-2xl overflow-hidden animate-appear">
+      <div className="relative w-full max-w-lg bg-[var(--bg-surface)] rounded-xl border border-[var(--border)] shadow-2xl overflow-hidden animate-appear">
 
         {/* ─── Step 1: Select Device ─── */}
         {step === 'select' && (

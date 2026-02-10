@@ -22,7 +22,6 @@ export default function ProfilePanel() {
     if (showProfile && user) {
       setDisplayName(user.display_name || '');
       setBio(user.bio || '');
-      // If avatar_url is an API endpoint, fetch it as blob for display
       if (user.avatar_url && user.avatar_url.includes('/files/')) {
         const fileEndpoint = user.avatar_url.replace(API_URL, '');
         api.get(fileEndpoint, { responseType: 'blob', timeout: 60000 })
@@ -37,40 +36,28 @@ export default function ProfilePanel() {
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) { toast.error('Please select an image file'); return; }
+    if (!file.type.startsWith('image/')) { toast.error('Please select an image'); return; }
     if (file.size > 5 * 1024 * 1024) { toast.error('Image must be under 5MB'); return; }
-
-    // Show preview immediately
-    const previewUrl = URL.createObjectURL(file);
-    setAvatarPreview(previewUrl);
-
+    setAvatarPreview(URL.createObjectURL(file));
     setIsUploadingAvatar(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
       const res = await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
       const fileId = res.data.file_id;
-      // Build authenticated blob URL for avatar display (img tags can't send Bearer tokens)
       const blobRes = await api.get(`/files/${fileId}/download`, { responseType: 'blob', timeout: 60000 });
       const blobUrl = URL.createObjectURL(blobRes.data);
-      // Store the API path as avatar_url (other components use AuthImage or blob fetching)
-      const avatarUrl = `${API_URL}/files/${fileId}/download`;
-      await updateProfile({ avatar_url: avatarUrl });
+      await updateProfile({ avatar_url: `${API_URL}/files/${fileId}/download` });
       setAvatarPreview(blobUrl);
       toast.success('Avatar updated');
-    } catch {
-      setAvatarPreview(user?.avatar_url || null);
-      toast.error('Failed to upload avatar');
-    } finally {
-      setIsUploadingAvatar(false);
-      if (avatarInputRef.current) avatarInputRef.current.value = '';
-    }
+    } catch { setAvatarPreview(user?.avatar_url || null); toast.error('Failed to upload avatar'); }
+    finally { setIsUploadingAvatar(false); if (avatarInputRef.current) avatarInputRef.current.value = ''; }
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     try { await updateProfile({ display_name: displayName.trim() || undefined, bio: bio.trim() || undefined }); toast.success('Profile updated'); setShowProfile(false); }
-    catch { toast.error('Failed to update profile'); }
+    catch { toast.error('Failed to update'); }
     finally { setIsSaving(false); }
   };
 
@@ -78,67 +65,66 @@ export default function ProfilePanel() {
 
   return (
     <div className="modal-overlay flex items-center justify-center p-4" onClick={() => setShowProfile(false)}>
-      <div className="modal-content glass-card rounded-2xl max-w-sm w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-[var(--accent-subtle)] flex items-center justify-center">
-              <Camera className="w-4 h-4 text-[var(--accent)]" />
-            </div>
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">Edit Profile</h3>
-          </div>
-          <button onClick={() => setShowProfile(false)} className="btn-icon text-[var(--text-muted)]">
-            <X className="w-4 h-4" />
-          </button>
+      <div className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-sm w-full overflow-hidden border border-[var(--border)] shadow-lg"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+          <h3 className="text-sm font-bold text-[var(--text-primary)]">Edit Profile</h3>
+          <button onClick={() => setShowProfile(false)} className="btn-icon"><X className="w-4 h-4" /></button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-5 space-y-4">
+          {/* Avatar */}
           <div className="flex justify-center">
             <div className="relative group">
               {avatarPreview ? (
                 /* eslint-disable-next-line @next/next/no-img-element */
-                <img src={avatarPreview} alt="Avatar" className="w-24 h-24 rounded-full object-cover shadow-lg transition-transform duration-300 group-hover:scale-105" />
+                <img src={avatarPreview} alt="Avatar" className="w-20 h-20 rounded-full object-cover" />
               ) : (
-                <div className={cn('w-24 h-24 rounded-full flex items-center justify-center text-white text-3xl font-bold shadow-lg transition-transform duration-300 group-hover:scale-105', getAvatarColor(user?.username || 'U'))}>
+                <div className={cn('w-20 h-20 rounded-full flex items-center justify-center text-white text-2xl font-bold', getAvatarColor(user?.username || 'U'))}>
                   {getInitials(displayName || user?.username || '?')}
                 </div>
               )}
               {isUploadingAvatar && (
                 <div className="absolute inset-0 rounded-full bg-black/50 flex items-center justify-center">
-                  <Loader2 className="w-6 h-6 animate-spin text-white" />
+                  <Loader2 className="w-5 h-5 animate-spin text-white" />
                 </div>
               )}
               <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} />
               <button onClick={() => avatarInputRef.current?.click()} disabled={isUploadingAvatar}
-                className="absolute bottom-0 right-0 w-8 h-8 rounded-full bg-[var(--accent)] flex items-center justify-center text-white border-[3px] border-[var(--bg-surface)] shadow-md transition-transform duration-200 hover:scale-110">
+                className="absolute bottom-0 right-0 w-7 h-7 rounded-full bg-[var(--accent)] flex items-center justify-center text-white border-2 border-[var(--bg-surface)] hover:scale-110 transition-transform">
                 <Camera className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
 
+          {/* Username (read-only) */}
           <div>
-            <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5">Username</label>
-            <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[var(--bg-app)] text-[var(--text-muted)] text-sm border border-[var(--border)]">
+            <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1">Username</label>
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-[var(--bg-wash)] text-[var(--text-muted)] text-sm border border-[var(--border)]">
               <AtSign className="w-3.5 h-3.5 text-[var(--accent)]" />
               <span className="font-medium">{user?.username || 'unknown'}</span>
             </div>
           </div>
 
+          {/* Display Name */}
           <div>
-            <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5">Display Name</label>
+            <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1">Display Name</label>
             <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-              className="input-modern" placeholder="Your display name" maxLength={100} />
+              className="input-field" placeholder="Your display name" maxLength={100} />
           </div>
 
+          {/* Bio */}
           <div>
-            <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5">About</label>
+            <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1">About</label>
             <textarea value={bio} onChange={(e) => setBio(e.target.value)}
-              className="input-modern resize-none" placeholder="Tell people about yourself" rows={3} maxLength={300} />
-            <p className="text-[10px] text-[var(--text-muted)] mt-1.5 text-right font-medium">{bio.length}/300</p>
+              className="input-field resize-none" placeholder="About you" rows={3} maxLength={300} />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1 text-right">{bio.length}/300</p>
           </div>
 
-          <div className="flex gap-3 pt-1">
-            <button onClick={() => setShowProfile(false)} className="btn-secondary flex-1 !rounded-xl py-2.5 font-semibold">Cancel</button>
-            <button onClick={handleSave} disabled={isSaving} className="btn-primary btn-shimmer flex-1 flex items-center justify-center gap-2 !rounded-xl py-2.5 font-bold">
+          {/* Buttons */}
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => setShowProfile(false)} className="btn-secondary flex-1 !rounded-lg py-2">Cancel</button>
+            <button onClick={handleSave} disabled={isSaving} className="btn-primary flex-1 !rounded-lg py-2 flex items-center justify-center gap-2">
               {isSaving && <Loader2 className="w-4 h-4 animate-spin" />} Save
             </button>
           </div>

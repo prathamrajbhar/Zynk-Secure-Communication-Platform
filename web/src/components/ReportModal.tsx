@@ -60,7 +60,7 @@ export default function ReportModal({ isOpen, onClose, type, targetId, targetNam
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 animate-fade-in" onClick={onClose}>
-      <div className="bg-[var(--bg-surface)] rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col shadow-overlay border border-[var(--border)] animate-scale-in mx-4"
+      <div className="bg-[var(--bg-surface)] rounded-xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col shadow-overlay border border-[var(--border)] animate-scale-in mx-4"
         onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="px-5 py-4 border-b border-[var(--border)] flex items-center justify-between flex-shrink-0">

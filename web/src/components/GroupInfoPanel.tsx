@@ -200,7 +200,7 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
   if (isLoading) {
     return (
       <div className="modal-overlay flex items-center justify-center p-4" onClick={onClose}>
-        <div className="modal-content glass-card rounded-2xl max-w-md w-full p-8 flex items-center justify-center" onClick={e => e.stopPropagation()}>
+        <div className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-md w-full p-8 flex items-center justify-center border border-[var(--border)] shadow-lg" onClick={e => e.stopPropagation()}>
           <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
         </div>
       </div>
@@ -211,7 +211,7 @@ export default function GroupInfoPanel({ groupId, onClose }: GroupInfoPanelProps
 
   return (
     <div className="modal-overlay flex items-center justify-center p-4" onClick={onClose}>
-      <div className="modal-content glass-card rounded-2xl max-w-md w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-md w-full max-h-[85vh] overflow-hidden flex flex-col border border-[var(--border)] shadow-lg" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] flex-shrink-0">
           <div className="flex items-center gap-2.5">

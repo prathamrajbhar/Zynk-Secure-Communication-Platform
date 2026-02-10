@@ -54,15 +54,10 @@ export default function NewChatModal() {
 
   return (
     <div className="modal-overlay flex items-center justify-center p-4" onClick={() => setShowNewChat(false)}>
-      <div className="modal-content glass-card rounded-2xl max-w-sm w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-[var(--accent-subtle)] flex items-center justify-center">
-              <MessageCircle className="w-4 h-4 text-[var(--accent)]" />
-            </div>
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">New Chat</h3>
-          </div>
-          <button onClick={() => setShowNewChat(false)} className="btn-icon text-[var(--text-muted)]">
+      <div className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-sm w-full overflow-hidden border border-[var(--border)] shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+          <h3 className="text-sm font-bold text-[var(--text-primary)]">New Chat</h3>
+          <button onClick={() => setShowNewChat(false)} className="btn-icon">
             <X className="w-4 h-4" />
           </button>
         </div>

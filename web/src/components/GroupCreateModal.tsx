@@ -66,7 +66,7 @@ export default function GroupCreateModal() {
 
   return (
     <div className="modal-overlay flex items-center justify-center p-4" onClick={() => setShowGroupCreate(false)}>
-      <div className="modal-content glass-card rounded-2xl max-w-md w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-md w-full overflow-hidden border border-[var(--border)] shadow-lg" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center gap-2 px-5 py-4 border-b border-[var(--border)]">
           {step === 'members' && (

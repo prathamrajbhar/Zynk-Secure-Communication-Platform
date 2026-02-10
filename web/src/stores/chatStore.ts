@@ -3,6 +3,7 @@ import api from '@/lib/api';
 import logger from '@/lib/logger';
 import { getSocket, isConnected, SOCKET_EVENTS } from '@/lib/socket';
 import { useCryptoStore } from '@/stores/cryptoStore';
+import { waitForCryptoReady } from '@/stores/cryptoStore';
 import { isGroupEncryptedMessage, isEncryptedMessage } from '@/lib/crypto';
 
 export interface Message {
@@ -127,6 +128,7 @@ interface ChatState {
   deleteConversation: (conversationId: string) => Promise<void>;
   clearChatHistory: (conversationId: string) => Promise<void>;
   markConversationUnread: (conversationId: string) => void;
+  retryDecryptMessages: (conversationId: string) => Promise<void>;
 }
 
 // Generate temporary ID for optimistic messages
@@ -163,6 +165,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const res = await api.get('/messages/conversations/list');
       let convs = res.data.conversations || [];
+
+      // Wait for crypto to finish initializing (up to 8 s).
+      // This avoids the race where hydrate fires initialize() in the background
+      // while fetchConversations already starts running.
+      await waitForCryptoReady(8000);
 
       // Try to decrypt last messages
       const cryptoStore = useCryptoStore.getState();
@@ -230,6 +237,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const res = await api.get(`/messages/${conversationId}?limit=50`);
       let messages = res.data.messages || [];
+
+      // Wait for crypto readiness before attempting decryption
+      await waitForCryptoReady(8000);
 
       // Decrypt fetched messages
       const cryptoStore = useCryptoStore.getState();
@@ -343,6 +353,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const oldestTimestamp = Math.floor(new Date(oldestMsg.created_at).getTime() / 1000);
       const res = await api.get(`/messages/${conversationId}?limit=50&before=${oldestTimestamp}`);
       let olderMessages = res.data.messages || [];
+
+      // Wait for crypto before attempting decryption
+      await waitForCryptoReady(8000);
 
       // Decrypt
       const cryptoStore = useCryptoStore.getState();
@@ -1183,5 +1196,60 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
       return { conversations: updatedConversations };
     });
+  },
+
+  /**
+   * Re-attempt decryption for every message in a conversation whose content
+   * is still missing or shows a decryption-failure placeholder.
+   * Called automatically when crypto finishes initializing after a delayed start.
+   */
+  retryDecryptMessages: async (conversationId: string) => {
+    const messages = get().messages[conversationId];
+    if (!messages?.length) return;
+
+    const cryptoStore = useCryptoStore.getState();
+    if (!cryptoStore.isInitialized) return;
+
+    const conversation = get().conversations.find(c => c.id === conversationId);
+    const isOneToOne = conversation?.type === 'one_to_one';
+    const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+    const partnerId = isOneToOne ? conversation?.other_user?.user_id : null;
+    const resolvedPartnerId = partnerId
+      || (currentUserId ? messages.find(m => m.sender_id !== currentUserId)?.sender_id : null);
+
+    let changed = false;
+    const updated = await Promise.all(messages.map(async (m) => {
+      // Only retry messages that need decryption
+      const needsDecrypt = !m.content
+        || m.content.startsWith('[Decryption failed')
+        || m.content.startsWith('[Cannot decrypt')
+        || isEncryptedMessage(m.content);
+      if (!needsDecrypt || !m.encrypted_content || m.isOptimistic) return m;
+
+      try {
+        let decrypted: string;
+        if (!isOneToOne && isGroupEncryptedMessage(m.encrypted_content)) {
+          decrypted = await cryptoStore.decryptGroup(m.sender_id, conversationId, m.encrypted_content);
+        } else if (resolvedPartnerId) {
+          decrypted = await cryptoStore.decrypt(resolvedPartnerId, m.encrypted_content);
+        } else {
+          return m;
+        }
+        // Only count as changed if we got real content back
+        if (!decrypted.startsWith('[Decryption failed') && !decrypted.startsWith('[Cannot decrypt')) {
+          changed = true;
+          return { ...m, content: decrypted };
+        }
+        return m;
+      } catch {
+        return m;
+      }
+    }));
+
+    if (changed) {
+      set(state => ({
+        messages: { ...state.messages, [conversationId]: updated },
+      }));
+    }
   },
 }));

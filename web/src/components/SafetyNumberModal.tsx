@@ -60,7 +60,7 @@ export default function SafetyNumberModal({ isOpen, onClose, userId, userName }:
   return (
     <div className="modal-overlay flex items-center justify-center p-4 z-[60]" onClick={onClose}>
       <div
-        className="modal-content glass-card rounded-2xl max-w-md w-full overflow-hidden"
+        className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-md w-full overflow-hidden border border-[var(--border)] shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

@@ -7,6 +7,7 @@ import { useChatStore, type Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useCryptoStore } from '@/stores/cryptoStore';
+import { waitForCryptoReady } from '@/stores/cryptoStore';
 import { isValidEncryptedMessage, isGroupEncryptedMessage } from '@/lib/crypto';
 import { connectSocket, disconnectSocket, SOCKET_EVENTS } from '@/lib/socket';
 import logger from '@/lib/logger';
@@ -112,18 +113,9 @@ export default function ChatPage() {
     const token = localStorage.getItem('session_token');
     if (!token) return;
 
-    // Ensure E2EE is initialized before connecting socket
-    const userStr = localStorage.getItem('user');
-    if (userStr) {
-      try {
-        const userData = JSON.parse(userStr);
-        if (userData.id) {
-          useCryptoStore.getState().initialize(userData.id).catch(err => {
-            logger.error('[E2EE] Pre-socket initialization failed:', err);
-          });
-        }
-      } catch { /* ignore parse errors */ }
-    }
+    // E2EE initialization is already handled by authStore.hydrate() / login().
+    // The stores' fetch methods await crypto readiness internally via
+    // waitForCryptoReady(), so no need for a separate initialize() call here.
 
     const socket = connectSocket(token);
 
@@ -141,8 +133,9 @@ export default function ChatPage() {
         // addMessage() will preserve it. No need to decrypt.
         decryptedContent = undefined;
       } else {
-        // Incoming message from another user — decrypt
+        // Incoming message from another user — wait for crypto readiness, then decrypt
         try {
+          await waitForCryptoReady(5000);
           const cs = useCryptoStore.getState();
           if (message.encrypted_content) {
             if (cs.isInitialized && isGroupEncryptedMessage(message.encrypted_content)) {
@@ -327,10 +320,13 @@ export default function ChatPage() {
   const cryptoReady = useCryptoStore((state) => state.isInitialized);
   useEffect(() => {
     if (!cryptoReady || !isAuthenticated) return;
-    const { activeConversation, fetchMessages, fetchConversations } = useChatStore.getState();
+    const { activeConversation, fetchMessages, fetchConversations, retryDecryptMessages } = useChatStore.getState();
+    // Re-fetch conversation list with decrypted previews
     fetchConversations();
+    // For the active conversation, retry decrypting any failed messages and
+    // then re-fetch to fill anything still missing.
     if (activeConversation) {
-      fetchMessages(activeConversation);
+      retryDecryptMessages(activeConversation).then(() => fetchMessages(activeConversation));
     }
   }, [cryptoReady, isAuthenticated]);
 
