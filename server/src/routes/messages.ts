@@ -467,6 +467,7 @@ router.post('/search', authenticate, async (req: AuthRequest, res: Response) => 
       message_type: m.message_type,
       snippet: m.encrypted_content,
       created_at: m.created_at,
+      expires_at: m.expires_at,
       sender_username: m.sender.username,
       sender_display_name: m.sender.profile?.display_name
     }));
@@ -562,6 +563,7 @@ router.post('/', authenticate, validate(sendMessageSchema), async (req: AuthRequ
       conversation_id: message.conversation_id,
       status: message.status,
       created_at: message.created_at,
+      expires_at: message.expires_at,
     });
   } catch (error) {
     console.error('Send message error:', error);
@@ -629,6 +631,7 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
       status: m.status,
       created_at: m.created_at,
       edited_at: m.edited_at,
+      expires_at: m.expires_at,
       sender_username: (m as any).sender.username,
       sender_display_name: (m as any).sender.profile?.display_name,
       sender_avatar: (m as any).sender.profile?.avatar_url

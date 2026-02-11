@@ -264,7 +264,7 @@ export function setupWebSocket(httpServer: HTTPServer) {
     // Send message — with input validation
     socket.on('message:send', async (data) => {
       try {
-        const { conversation_id, recipient_id, encrypted_content, message_type = 'text', reply_to_id, temp_id } = data;
+        const { conversation_id, recipient_id, encrypted_content, message_type = 'text', reply_to_id, temp_id, expires_in_seconds } = data;
 
         // SECURITY: Validate inputs to prevent injection
         if (encrypted_content && typeof encrypted_content !== 'string') {
@@ -339,6 +339,8 @@ export function setupWebSocket(httpServer: HTTPServer) {
           if (reply_to_id) metadata.reply_to_id = reply_to_id;
           if (temp_id) metadata.temp_id = temp_id;
 
+          const expiresAt = expires_in_seconds ? new Date(Date.now() + expires_in_seconds * 1000) : null;
+
           const message = await tx.messages.create({
             data: {
               conversation_id: convId,
@@ -346,7 +348,8 @@ export function setupWebSocket(httpServer: HTTPServer) {
               encrypted_content,
               message_type: message_type as MessageType,
               metadata: Object.keys(metadata).length > 0 ? metadata : Prisma.JsonNull,
-              status: 'sent' as MessageStatus
+              status: 'sent' as MessageStatus,
+              expires_at: expiresAt,
             },
             include: {
               sender: {
@@ -377,6 +380,7 @@ export function setupWebSocket(httpServer: HTTPServer) {
           sender_id: result.sender_id,
           encrypted_content: result.encrypted_content,
           message_type: result.message_type,
+          expires_at: result.expires_at,
           metadata: result.metadata,
           status: result.status,
           created_at: result.created_at,

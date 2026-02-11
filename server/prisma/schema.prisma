@@ -93,35 +93,37 @@ model User {
   id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   username      String   @unique @db.VarChar(64)
   password_hash String   @db.VarChar(255) // bcrypt hash
-  public_key    String?  // Signal Protocol identity key (set during key upload)
+  public_key    String? // Signal Protocol identity key (set during key upload)
   created_at    DateTime @default(now()) @db.Timestamp(6)
   updated_at    DateTime @default(now()) @updatedAt @db.Timestamp(6)
 
   // Relations
-  profile            UserProfile?
-  devices            Device[]
-  sessions           Session[]
-  participants       ConversationParticipant[]
-  messages           Messages[]
-  groupsCreated      Group[]           @relation("GroupsCreated")
-  groupMembers       GroupMember[]      @relation("UserGroupMembers")
-  groupsInvited      GroupMember[]      @relation("InvitedBy")
-  files              File[]
-  callsInitiated     Call[]            @relation("CallsInitiated")
-  callParticipations CallParticipant[]
-  contacts           Contact[]         @relation("UserContacts")
-  contactOf          Contact[]         @relation("ContactOf")
-  identityKeys       IdentityKey[]
-  signedPreKeys      SignedPreKey[]
-  preKeys            PreKey[]
-  pollsCreated       Poll[]            @relation("PollsCreated")
-  pollVotes          PollVote[]
-  messagesDeletedFor MessageDeletedFor[]
-  senderKeysCreated  GroupSenderKey[]  @relation("SenderKeysCreated")
-  senderKeysReceived GroupSenderKey[]  @relation("SenderKeysReceived")
+  profile             UserProfile?
+  devices             Device[]
+  sessions            Session[]
+  participants        ConversationParticipant[]
+  messages            Messages[]
+  groupsCreated       Group[]                   @relation("GroupsCreated")
+  groupMembers        GroupMember[]             @relation("UserGroupMembers")
+  groupsInvited       GroupMember[]             @relation("InvitedBy")
+  files               File[]
+  callsInitiated      Call[]                    @relation("CallsInitiated")
+  callParticipations  CallParticipant[]
+  contacts            Contact[]                 @relation("UserContacts")
+  contactOf           Contact[]                 @relation("ContactOf")
+  identityKeys        IdentityKey[]
+  signedPreKeys       SignedPreKey[]
+  preKeys             PreKey[]
+  pollsCreated        Poll[]                    @relation("PollsCreated")
+  pollVotes           PollVote[]
+  messagesDeletedFor  MessageDeletedFor[]
+  senderKeysCreated   GroupSenderKey[]          @relation("SenderKeysCreated")
+  senderKeysReceived  GroupSenderKey[]          @relation("SenderKeysReceived")
+  ratchetSessions     RatchetSession[]
+  peerRatchetSessions RatchetSession[]          @relation("PeerSessions")
 
-  @@map("users")
   @@index([username], map: "idx_users_username")
+  @@map("users")
 }
 
 /// User profile — 1:1 extension of User for display info and privacy settings
@@ -150,22 +152,22 @@ model Device {
   user_id            String    @db.Uuid
   device_name        String?   @db.VarChar(255)
   device_fingerprint String    @db.VarChar(64)
-  public_key         String?   // Device-specific Signal Protocol key
-  push_token         String?   // FCM/APNs token for push notifications
+  public_key         String? // Device-specific Signal Protocol key
+  push_token         String? // FCM/APNs token for push notifications
   platform           Platform  @default(web)
   last_active_at     DateTime? @db.Timestamp(6)
   created_at         DateTime  @default(now()) @db.Timestamp(6)
 
-  user          User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user          User           @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   sessions      Session[]
   identityKeys  IdentityKey[]
   signedPreKeys SignedPreKey[]
   preKeys       PreKey[]
 
   @@unique([user_id, device_fingerprint], map: "uq_devices_user_fingerprint")
-  @@map("devices")
   @@index([user_id], map: "idx_devices_user_id")
   @@index([device_fingerprint], map: "idx_devices_fingerprint")
+  @@map("devices")
 }
 
 /// Authenticated session — JWT session + refresh token pair per device
@@ -184,11 +186,11 @@ model Session {
   user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@map("sessions")
   @@index([session_token], map: "idx_sessions_token")
   @@index([user_id], map: "idx_sessions_user")
   @@index([device_id], map: "idx_sessions_device")
   @@index([expires_at], map: "idx_sessions_expires")
+  @@map("sessions")
 }
 
 // ======================== Conversations & Messages ========================
@@ -196,11 +198,11 @@ model Session {
 /// Conversation — container for messages between users (1:1 or group)
 /// Used in: messages (create/find/list), groups (linked via conversation_id), calls, websocket rooms
 model Conversation {
-  id              String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  type            ConversationType   @default(one_to_one)
-  encryption_type EncryptionType     @default(e2ee)
-  created_at      DateTime           @default(now()) @db.Timestamp(6)
-  updated_at      DateTime           @default(now()) @db.Timestamp(6)
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type            ConversationType @default(one_to_one)
+  encryption_type EncryptionType   @default(e2ee)
+  created_at      DateTime         @default(now()) @db.Timestamp(6)
+  updated_at      DateTime         @default(now()) @db.Timestamp(6)
 
   participants    ConversationParticipant[]
   messages        Messages[]
@@ -209,10 +211,11 @@ model Conversation {
   calls           Call[]
   polls           Poll[]
   groupSenderKeys GroupSenderKey[]
+  ratchetSessions RatchetSession[]
 
-  @@map("conversations")
   @@index([type], map: "idx_conversations_type")
   @@index([updated_at(sort: Desc)], map: "idx_conversations_updated")
+  @@map("conversations")
 }
 
 /// Conversation participant — junction table linking users to conversations with roles
@@ -228,9 +231,9 @@ model ConversationParticipant {
   user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([conversation_id, user_id])
-  @@map("conversation_participants")
   @@index([conversation_id], map: "idx_participants_conversation")
   @@index([user_id], map: "idx_participants_user")
+  @@map("conversation_participants")
 }
 
 /// Message — E2EE encrypted message within a conversation
@@ -240,25 +243,25 @@ model Messages {
   id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   conversation_id   String        @db.Uuid
   sender_id         String        @db.Uuid
-  encrypted_content String        // E2EE encrypted — server cannot read
+  encrypted_content String // E2EE encrypted — server cannot read
   content_hash      String?       @db.VarChar(64) // SHA-256 for integrity
   message_type      MessageType   @default(text)
-  metadata          Json?         // reply_to_id, mentions, reactions, edited flag
+  metadata          Json? // reply_to_id, mentions, reactions, edited flag
   status            MessageStatus @default(sent)
   expires_at        DateTime?     @db.Timestamp(6) // Self-destructing messages
   created_at        DateTime      @default(now()) @db.Timestamp(6)
   edited_at         DateTime?     @db.Timestamp(6)
   deleted_at        DateTime?     @db.Timestamp(6) // Soft delete
 
-  conversation Conversation          @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  sender       User                  @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  deletedFor   MessageDeletedFor[]   // Per-user deletions
+  conversation Conversation        @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender       User                @relation(fields: [sender_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  deletedFor   MessageDeletedFor[] // Per-user deletions
 
-  @@map("messages")
   @@index([conversation_id, created_at(sort: Desc)], map: "idx_messages_conversation")
   @@index([sender_id], map: "idx_messages_sender")
   @@index([status, created_at], map: "idx_messages_status")
   @@index([expires_at], map: "idx_messages_expires")
+  @@map("messages")
 }
 
 // ======================== Groups ========================
@@ -266,23 +269,23 @@ model Messages {
 /// Group — named group chat with member management, linked to a Conversation
 /// Used in: groups (CRUD, member management), messages (conversation listing with group info)
 model Group {
-  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name            String    @db.VarChar(255)
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String   @db.VarChar(255)
   description     String?
   avatar_url      String?
-  conversation_id String?   @unique @db.Uuid
-  max_members     Int?      @default(256)
-  created_by      String    @db.Uuid
-  created_at      DateTime  @default(now()) @db.Timestamp(6)
-  updated_at      DateTime  @default(now()) @db.Timestamp(6)
+  conversation_id String?  @unique @db.Uuid
+  max_members     Int?     @default(256)
+  created_by      String   @db.Uuid
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+  updated_at      DateTime @default(now()) @db.Timestamp(6)
 
   conversation Conversation? @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   creator      User          @relation("GroupsCreated", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   members      GroupMember[]
 
-  @@map("groups")
   @@index([created_by], map: "idx_groups_created_by")
   @@index([created_at(sort: Desc)], map: "idx_groups_created_at")
+  @@map("groups")
 }
 
 /// Group member — junction table for group membership with roles and invitations
@@ -299,8 +302,8 @@ model GroupMember {
   inviter User? @relation("InvitedBy", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([group_id, user_id])
-  @@map("group_members")
   @@index([user_id], map: "idx_group_members_user")
+  @@map("group_members")
 }
 
 // ======================== File Sharing ========================
@@ -312,12 +315,12 @@ model File {
   uploader_id     String    @db.Uuid
   conversation_id String?   @db.Uuid
   filename        String    @db.VarChar(255) // Original filename
-  file_size       BigInt    // Size in bytes
+  file_size       BigInt // Size in bytes
   mime_type       String?   @db.VarChar(100)
-  storage_path    String    // Server-side storage filename
+  storage_path    String // Server-side storage filename
   content_hash    String?   @db.VarChar(64) // SHA-256 for integrity/ETag
-  thumbnail_path  String?   // Generated thumbnail filename
-  metadata        Json?     // original_name, dimensions, duration, etc.
+  thumbnail_path  String? // Generated thumbnail filename
+  metadata        Json? // original_name, dimensions, duration, etc.
   expires_at      DateTime? @db.Timestamp(6)
   created_at      DateTime  @default(now()) @db.Timestamp(6)
   deleted_at      DateTime? @db.Timestamp(6) // Soft delete
@@ -325,11 +328,11 @@ model File {
   conversation Conversation? @relation(fields: [conversation_id], references: [id], onUpdate: NoAction)
   uploader     User          @relation(fields: [uploader_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@map("files")
   @@index([uploader_id], map: "idx_files_uploader")
   @@index([conversation_id], map: "idx_files_conversation")
   @@index([created_at(sort: Desc)], map: "idx_files_created")
   @@index([expires_at], map: "idx_files_expires")
+  @@map("files")
 }
 
 // ======================== Voice & Video Calls ========================
@@ -344,18 +347,18 @@ model Call {
   conversation_id  String?    @db.Uuid
   started_at       DateTime?  @db.Timestamp(6) // Set when answered
   ended_at         DateTime?  @db.Timestamp(6)
-  duration_seconds Int?       // Computed on end
+  duration_seconds Int? // Computed on end
   created_at       DateTime   @default(now()) @db.Timestamp(6)
 
-  conversation Conversation?   @relation(fields: [conversation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  initiator    User             @relation("CallsInitiated", fields: [initiator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  conversation Conversation?     @relation(fields: [conversation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  initiator    User              @relation("CallsInitiated", fields: [initiator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   participants CallParticipant[]
 
-  @@map("calls")
   @@index([initiator_id], map: "idx_calls_initiator")
   @@index([conversation_id], map: "idx_calls_conversation")
   @@index([created_at(sort: Desc)], map: "idx_calls_created")
   @@index([status], map: "idx_calls_status")
+  @@map("calls")
 }
 
 /// Call participant — tracks who joined/left a call and when
@@ -370,8 +373,8 @@ model CallParticipant {
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([call_id, user_id])
-  @@map("call_participants")
   @@index([user_id], map: "idx_call_participants_user")
+  @@map("call_participants")
 }
 
 // ======================== Contacts ========================
@@ -389,10 +392,10 @@ model Contact {
   contact User @relation("ContactOf", fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([user_id, contact_id])
-  @@map("contacts")
   @@index([user_id], map: "idx_contacts_user")
   @@index([contact_id], map: "idx_contacts_contact")
   @@index([user_id, blocked], map: "idx_contacts_user_blocked")
+  @@map("contacts")
 }
 
 // ======================== E2EE Key Management (Signal Protocol) ========================
@@ -403,8 +406,8 @@ model IdentityKey {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id         String   @db.Uuid
   device_id       String   @db.Uuid
-  identity_key    String   // Base64-encoded public identity key
-  registration_id Int      // Signal Protocol registration ID
+  identity_key    String // Base64-encoded public identity key
+  registration_id Int // Signal Protocol registration ID
   created_at      DateTime @default(now()) @db.Timestamp(6)
   updated_at      DateTime @default(now()) @updatedAt @db.Timestamp(6)
 
@@ -412,8 +415,8 @@ model IdentityKey {
   device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, device_id])
-  @@map("identity_keys")
   @@index([user_id], map: "idx_identity_keys_user")
+  @@map("identity_keys")
 }
 
 /// Signed pre-key — medium-term rotating key (one per device, replaced on upload)
@@ -422,17 +425,17 @@ model SignedPreKey {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id    String   @db.Uuid
   device_id  String   @db.Uuid
-  key_id     Int      // Signal Protocol key ID
-  public_key String   // Base64-encoded public key
-  signature  String   // Base64-encoded signature
+  key_id     Int // Signal Protocol key ID
+  public_key String // Base64-encoded public key
+  signature  String // Base64-encoded signature
   created_at DateTime @default(now()) @db.Timestamp(6)
 
   user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, device_id, key_id])
-  @@map("signed_pre_keys")
   @@index([user_id, device_id], map: "idx_signed_pre_keys_user_device")
+  @@map("signed_pre_keys")
 }
 
 /// One-time pre-key — ephemeral keys consumed during session establishment
@@ -441,8 +444,8 @@ model PreKey {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id    String   @db.Uuid
   device_id  String   @db.Uuid
-  key_id     Int      // Signal Protocol key ID
-  public_key String   // Base64-encoded public key
+  key_id     Int // Signal Protocol key ID
+  public_key String // Base64-encoded public key
   used       Boolean  @default(false) // Marked true when consumed
   created_at DateTime @default(now()) @db.Timestamp(6)
 
@@ -450,8 +453,8 @@ model PreKey {
   device Device @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, device_id, key_id])
-  @@map("pre_keys")
   @@index([user_id, device_id, used], map: "idx_pre_keys_user_device_used")
+  @@map("pre_keys")
 }
 
 // ======================== Polls ========================
@@ -459,21 +462,21 @@ model PreKey {
 /// Poll — polls within conversations
 /// Used in: messages (poll creation, voting, results)
 model Poll {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  conversation_id String   @db.Uuid
-  creator_id      String   @db.Uuid
-  question        String   @db.VarChar(500)
-  allow_multiple  Boolean  @default(false)
-  is_anonymous    Boolean  @default(false)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversation_id String    @db.Uuid
+  creator_id      String    @db.Uuid
+  question        String    @db.VarChar(500)
+  allow_multiple  Boolean   @default(false)
+  is_anonymous    Boolean   @default(false)
   closes_at       DateTime? @db.Timestamp(6)
-  created_at      DateTime @default(now()) @db.Timestamp(6)
+  created_at      DateTime  @default(now()) @db.Timestamp(6)
 
   conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   creator      User         @relation("PollsCreated", fields: [creator_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   options      PollOption[]
 
-  @@map("polls")
   @@index([conversation_id], map: "idx_polls_conversation")
+  @@map("polls")
 }
 
 /// Poll option — individual choices within a poll
@@ -485,8 +488,8 @@ model PollOption {
   poll  Poll       @relation(fields: [poll_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   votes PollVote[]
 
-  @@map("poll_options")
   @@index([poll_id], map: "idx_poll_options_poll")
+  @@map("poll_options")
 }
 
 // ======================== Group E2EE Sender Keys ========================
@@ -500,8 +503,8 @@ model GroupSenderKey {
   conversation_id String   @db.Uuid
   sender_id       String   @db.Uuid
   recipient_id    String   @db.Uuid
-  key_id          Int      // Incrementing version — bumped on key rotation
-  encrypted_key   String   // Sender's AES-256 key encrypted via 1:1 ECDH with recipient
+  key_id          Int // Incrementing version — bumped on key rotation
+  encrypted_key   String // Sender's AES-256 key encrypted via 1:1 ECDH with recipient
   created_at      DateTime @default(now()) @db.Timestamp(6)
 
   conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -509,9 +512,9 @@ model GroupSenderKey {
   recipient    User         @relation("SenderKeysReceived", fields: [recipient_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([conversation_id, sender_id, recipient_id, key_id])
-  @@map("group_sender_keys")
   @@index([conversation_id, recipient_id], map: "idx_group_sender_keys_conv_recipient")
   @@index([conversation_id, sender_id], map: "idx_group_sender_keys_conv_sender")
+  @@map("group_sender_keys")
 }
 
 /// Poll vote — records a user's vote on a poll option
@@ -524,8 +527,8 @@ model PollVote {
   user   User       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([option_id, user_id])
-  @@map("poll_votes")
   @@index([user_id], map: "idx_poll_votes_user")
+  @@map("poll_votes")
 }
 
 /// Message deletion — tracks per-user message deletions ("delete for me")
@@ -539,6 +542,49 @@ model MessageDeletedFor {
   user    User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([message_id, user_id])
-  @@map("message_deleted_for")
   @@index([user_id], map: "idx_message_deleted_for_user")
+  @@map("message_deleted_for")
+}
+
+// ======================== Double Ratchet Session State ========================
+
+/// Double Ratchet session state — stores per-conversation ratchet chains
+/// Enables forward secrecy (past messages safe) and future secrecy (self-healing)
+/// Used in: Signal Protocol message encryption/decryption, session management
+model RatchetSession {
+  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String @db.Uuid
+  peer_id         String @db.Uuid
+  conversation_id String @db.Uuid
+
+  // Ratchet state - KDF chains for message key derivation
+  root_key            String // Current root key (base64) - ratcheted on DH step
+  sending_chain_key   String? // Current sending chain key (base64)
+  receiving_chain_key String? // Current receiving chain key (base64)
+  sending_chain_n     Int     @default(0) // Sending chain message number
+  receiving_chain_n   Int     @default(0) // Receiving chain message number
+  previous_chain_n    Int     @default(0) // Previous sending chain length (for header)
+
+  // DH ratchet keys - rotated on each message exchange
+  dh_public_key      String // Our current DH public key (base64)
+  dh_private_key     String // Our current DH private key (base64)
+  peer_dh_public_key String? // Peer's current DH public key (base64)
+
+  // Skipped message keys - for out-of-order message decryption
+  // Format: { "dh_public_key:message_number": "message_key_base64" }
+  skipped_message_keys Json @default("{}")
+
+  // Session metadata
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  updated_at DateTime @default(now()) @updatedAt @db.Timestamp(6)
+
+  // Relations
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  peer         User         @relation("PeerSessions", fields: [peer_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  conversation Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, peer_id, conversation_id])
+  @@index([user_id, conversation_id], map: "idx_ratchet_sessions_user_conv")
+  @@index([updated_at], map: "idx_ratchet_sessions_updated")
+  @@map("ratchet_sessions")
 }
