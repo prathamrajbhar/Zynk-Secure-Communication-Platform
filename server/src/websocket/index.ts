@@ -590,6 +590,65 @@ export function setupWebSocket(httpServer: HTTPServer) {
       }
     });
 
+    // ============== KEY BACKUP & DEVICE SYNC EVENTS ==============
+
+    // Notify other devices that the key backup was updated
+    socket.on('key:backup-updated', async (data) => {
+      try {
+        const { key_version } = data;
+        // Notify all other devices of this user
+        socket.to(`user:${userId}`).emit('key:backup-changed', {
+          user_id: userId,
+          key_version,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('Key backup notification error:', error);
+      }
+    });
+
+    // Notify other devices of key rotation (new epoch)
+    socket.on('key:epoch-rotated', async (data) => {
+      try {
+        const { new_epoch, new_public_key } = data;
+        // Broadcast to all devices of this user
+        socket.to(`user:${userId}`).emit('key:epoch-changed', {
+          user_id: userId,
+          new_epoch,
+          new_public_key,
+          rotated_at: new Date().toISOString(),
+        });
+        // Also notify all conversations this user is in
+        const convParticipants = await prisma.conversationParticipant.findMany({
+          where: { user_id: userId },
+          select: { conversation_id: true },
+        });
+        for (const p of convParticipants) {
+          socket.to(`conversation:${p.conversation_id}`).emit('key:peer-epoch-changed', {
+            user_id: userId,
+            new_epoch,
+            new_public_key,
+            conversation_id: p.conversation_id,
+          });
+        }
+      } catch (error) {
+        console.error('Key epoch rotation notification error:', error);
+      }
+    });
+
+    // Request ratchet state sync from server (new device joining)
+    socket.on('key:request-sync', async () => {
+      try {
+        // Signal other devices to push their latest state
+        socket.to(`user:${userId}`).emit('key:sync-requested', {
+          requesting_device: socket.deviceId,
+          requested_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('Key sync request error:', error);
+      }
+    });
+
     // Request key rotation (triggered after member add/remove)
     socket.on('group:request-key-rotation', async (data) => {
       try {

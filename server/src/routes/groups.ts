@@ -4,6 +4,7 @@ import prisma from '../db/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { ParticipantRole, ConversationType } from '@prisma/client';
+import { logger } from '../lib/logger';
 
 const router = Router();
 

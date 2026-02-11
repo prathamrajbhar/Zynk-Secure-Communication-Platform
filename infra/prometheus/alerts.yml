@@ -1,0 +1,126 @@
+# ============================================================================
+# Prometheus Alert Rules — Zynk
+# ============================================================================
+
+groups:
+  - name: zynk-critical
+    rules:
+      # ======================== Service Health ========================
+      - alert: ServiceDown
+        expr: up{job="zynk-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zynk API server is down"
+          description: "{{ $labels.instance }} has been unreachable for 1 minute."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(zynk_http_requests_total{status_code=~"5.."}[5m]))
+          / sum(rate(zynk_http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate (>5%)"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99, rate(zynk_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "P99 latency exceeds 2 seconds"
+          description: "P99 latency: {{ $value }}s"
+
+      # ======================== Database ========================
+      - alert: DatabaseDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+
+      - alert: DatabaseHighConnections
+        expr: pg_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database connection count: {{ $value }}"
+
+      - alert: SlowQueries
+        expr: |
+          histogram_quantile(0.95, rate(zynk_db_query_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 database query time exceeds 1 second"
+
+      # ======================== Redis ========================
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+
+      - alert: RedisHighMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage > 85%"
+
+      # ======================== Application ========================
+      - alert: HighMemoryUsage
+        expr: |
+          process_resident_memory_bytes{job="zynk-server"} > 1073741824
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Server memory usage exceeds 1GB"
+
+      - alert: CircuitBreakerOpen
+        expr: zynk_circuit_breaker_state > 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker is OPEN for {{ $labels.service }}"
+
+      - alert: HighWebSocketConnections
+        expr: zynk_ws_connections_active > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 10K active WebSocket connections"
+
+      - alert: AuthBruteForce
+        expr: |
+          rate(zynk_auth_failures_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Possible brute force attack detected"
+          description: "Auth failure rate: {{ $value }}/s"
+
+      # ======================== Message Delivery ========================
+      - alert: MessageDeliverySlowdown
+        expr: |
+          histogram_quantile(0.95, rate(zynk_message_delivery_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 message delivery time exceeds 5 seconds"

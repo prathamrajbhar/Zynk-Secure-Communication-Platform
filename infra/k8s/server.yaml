@@ -1,0 +1,344 @@
+# ============================================================================
+# Zynk API Server — Kubernetes Deployment
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zynk-server
+  namespace: zynk
+  labels:
+    app: zynk
+    component: server
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: zynk
+      component: server
+  template:
+    metadata:
+      labels:
+        app: zynk
+        component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: zynk-server
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+
+      # Anti-affinity: spread across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: [zynk]
+                    - key: component
+                      operator: In
+                      values: [server]
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: server
+          image: ghcr.io/zynk/server:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: zynk-server-config
+            - secretRef:
+                name: zynk-server-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: zynk-uploads-pvc
+
+---
+# ============================================================================
+# Service
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: zynk-server
+  namespace: zynk
+  labels:
+    app: zynk
+    component: server
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    app: zynk
+    component: server
+
+---
+# ============================================================================
+# Horizontal Pod Autoscaler
+# ============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zynk-server-hpa
+  namespace: zynk
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zynk-server
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+
+---
+# ============================================================================
+# ConfigMap
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zynk-server-config
+  namespace: zynk
+data:
+  NODE_ENV: "production"
+  PORT: "8000"
+  LOG_LEVEL: "info"
+  DB_POOL_MAX: "30"
+  DB_POOL_MIN: "5"
+  RATE_LIMIT_WINDOW_MS: "900000"
+  RATE_LIMIT_MAX: "100"
+  AUTH_RATE_LIMIT_MAX_LOGIN: "5"
+  AUTH_RATE_LIMIT_MAX_REGISTER: "3"
+  BCRYPT_ROUNDS: "12"
+  MAX_DEVICES: "5"
+  JWT_EXPIRES_IN: "15m"
+  JWT_REFRESH_EXPIRES_IN: "7d"
+
+---
+# ============================================================================
+# Secrets (base64 encoded — use external-secrets or sealed-secrets in prod)
+# ============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zynk-server-secrets
+  namespace: zynk
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://zynk:CHANGE_ME@postgres-primary:5432/zynk?sslmode=require"
+  REDIS_URL: "redis://:CHANGE_ME@redis-master:6379"
+  JWT_SECRET: "CHANGE_ME_TO_64_CHAR_RANDOM_STRING_GENERATED_WITH_OPENSSL"
+  JWT_REFRESH_SECRET: "CHANGE_ME_TO_64_CHAR_RANDOM_STRING_GENERATED_WITH_OPENSSL"
+
+---
+# ============================================================================
+# PVC for uploads
+# ============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zynk-uploads-pvc
+  namespace: zynk
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# ============================================================================
+# Network Policy — restrict traffic
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zynk-server-netpol
+  namespace: zynk
+spec:
+  podSelector:
+    matchLabels:
+      app: zynk
+      component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: zynk
+              component: nginx
+      ports:
+        - port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+    - to: # DNS
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# ============================================================================
+# Pod Disruption Budget
+# ============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zynk-server-pdb
+  namespace: zynk
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: zynk
+      component: server
+
+---
+# ============================================================================
+# Ingress (with cert-manager TLS)
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zynk-ingress
+  namespace: zynk
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/websocket-services: "zynk-server"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.zynk.example.com
+        - zynk.example.com
+      secretName: zynk-tls
+  rules:
+    - host: api.zynk.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zynk-server
+                port:
+                  number: 8000
+    - host: zynk.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zynk-web
+                port:
+                  number: 3000

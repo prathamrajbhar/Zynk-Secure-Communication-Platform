@@ -11,6 +11,10 @@ import { validate } from '../middleware/validate';
 import { Platform } from '@prisma/client';
 
 import { registerPushToken } from '../services/pushNotification';
+import { loginRateLimit, registerRateLimit } from '../middleware/rateLimiter';
+import { recordAudit, AuditAction } from '../lib/audit';
+import { logger } from '../lib/logger';
+import { businessMetrics } from '../lib/metrics';
 
 const router = Router();
 
@@ -54,7 +58,7 @@ function generateTokens(userId: string, deviceId: string) {
 }
 
 // POST /auth/register
-router.post('/register', validate(registerSchema), async (req, res: Response) => {
+router.post('/register', registerRateLimit, validate(registerSchema), async (req, res: Response) => {
   try {
     const { username, password, device_name, device_fingerprint, public_key } = req.body;
 
@@ -120,6 +124,16 @@ router.post('/register', validate(registerSchema), async (req, res: Response) =>
       }
     });
 
+    // Audit: successful registration
+    businessMetrics.registrations.inc();
+    await recordAudit({
+      action: AuditAction.REGISTER,
+      userId: user.id,
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'],
+      details: { username, deviceId: device.id },
+    });
+
     return res.status(201).json({
       user_id: user.id,
       username,
@@ -128,14 +142,14 @@ router.post('/register', validate(registerSchema), async (req, res: Response) =>
       expires_at: Math.floor(expiresAt.getTime() / 1000),
     });
   } catch (error) {
-    console.error('Register error:', error);
+    logger.error({ error, username: req.body?.username }, 'Registration failed');
     // SECURITY: Generic error message to prevent information disclosure
     return res.status(500).json({ error: 'Registration failed' });
   }
 });
 
 // POST /auth/login
-router.post('/login', validate(loginSchema), async (req, res: Response) => {
+router.post('/login', loginRateLimit, validate(loginSchema), async (req, res: Response) => {
   try {
     const { username, password, device_fingerprint, device_name } = req.body;
 
@@ -150,12 +164,27 @@ router.post('/login', validate(loginSchema), async (req, res: Response) => {
     if (!user) {
       // Still run bcrypt.compare against a dummy hash to prevent timing attacks
       await bcrypt.compare(password, '$2a$12$LJ3m4YZ9K8a2Q0v5P1r0Ue.dummy.hash.to.prevent.timing.attacks');
+      businessMetrics.authFailures.inc({ reason: 'invalid_credentials' });
+      await recordAudit({
+        action: AuditAction.LOGIN_FAILED,
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'],
+        details: { username, reason: 'user_not_found' },
+      });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Verify password
     const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
+      businessMetrics.authFailures.inc({ reason: 'invalid_credentials' });
+      await recordAudit({
+        action: AuditAction.LOGIN_FAILED,
+        userId: user.id,
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.headers['user-agent'],
+        details: { username, reason: 'wrong_password' },
+      });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -240,6 +269,15 @@ router.post('/login', validate(loginSchema), async (req, res: Response) => {
       })
     ]);
 
+    // Audit: successful login
+    await recordAudit({
+      action: AuditAction.LOGIN,
+      userId: user.id,
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'],
+      details: { deviceId, deviceName: device_name },
+    });
+
     return res.status(200).json({
       user_id: user.id,
       session_token: sessionToken,
@@ -248,7 +286,7 @@ router.post('/login', validate(loginSchema), async (req, res: Response) => {
       expires_at: Math.floor(expiresAt.getTime() / 1000),
     });
   } catch (error) {
-    console.error('Login error:', error);
+    logger.error({ error }, 'Login failed');
     return res.status(500).json({ error: 'Login failed' });
   }
 });
@@ -377,7 +415,7 @@ router.post('/force-login', validate(forceLoginSchema), async (req, res: Respons
       expires_at: Math.floor(result.expiresAt.getTime() / 1000),
     });
   } catch (error) {
-    console.error('Force-login error:', error);
+    logger.error({ error }, 'Force login failed');
     return res.status(500).json({ error: 'Force login failed' });
   }
 });

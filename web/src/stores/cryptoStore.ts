@@ -24,7 +24,6 @@ import {
   generateKeyPair,
   buildKeyUploadPayload,
   deriveAESKey,
-  encryptText,
   decryptText,
   isValidEncryptedMessage,
   isGroupEncryptedMessage,
@@ -36,6 +35,17 @@ import {
   encryptSenderKeyForDistribution,
   decryptSenderKeyDistribution,
   GroupSenderKey,
+  // Key backup & v5 encryption
+  encryptPrivateKeyForBackup,
+  decryptPrivateKeyFromBackup,
+  deriveEpochAESKey,
+  encryptTextV5,
+  decryptTextV5,
+  isV5EncryptedMessage,
+  getEnvelopeEpoch,
+  exportAESKey,
+  encryptKeyForArchive,
+  base64ToArrayBuffer,
 } from '@/lib/crypto';
 
 // ========== localStorage helpers ==========
@@ -57,6 +67,7 @@ export function clearKeys(userId: string) {
   localStorage.removeItem(`zynk_priv_${userId}`);
   localStorage.removeItem(`zynk_group_own_${userId}`);
   localStorage.removeItem(`zynk_group_received_${userId}`);
+  localStorage.removeItem(`zynk_epoch_${userId}`);
 }
 
 // ========== Group sender key persistence ==========
@@ -153,6 +164,9 @@ interface CryptoState {
   publicKey: string | null;
   privateKey: string | null;
 
+  /** Current key epoch (incremented on key rotation) */
+  keyEpoch: number;
+
   /** In-memory cache: remoteUserId → CryptoKey (AES-GCM) */
   aesKeys: Map<string, CryptoKey>;
 
@@ -163,7 +177,7 @@ interface CryptoState {
   ownGroupKeys: Map<string, GroupKeyEntry>;
 
   // Actions
-  initialize: (userId: string) => Promise<void>;
+  initialize: (userId: string, password?: string) => Promise<void>;
   encrypt: (remoteUserId: string, plaintext: string) => Promise<string>;
   decrypt: (remoteUserId: string, ciphertextJson: string) => Promise<string>;
   encryptGroup: (conversationId: string, plaintext: string) => Promise<string>;
@@ -187,16 +201,23 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   aesKeys: new Map(),
   groupSenderKeys: new Map(),
   ownGroupKeys: new Map(),
+  keyEpoch: 1,
 
   /**
    * Initialize E2EE for the logged-in user.
-   * Loads existing keys from localStorage or generates + uploads new ones.
-   * Also restores persisted group sender keys.
    *
-   * Safe to call concurrently — only one init runs at a time and all callers
-   * share the same in-flight promise.
+   * Key restoration priority:
+   *   1. localStorage (fastest — same device, same browser)
+   *   2. Server backup  (new device — needs password to decrypt)
+   *   3. Generate new   (first-time registration)
+   *
+   * When password is provided (login/register), creates or verifies
+   * an encrypted backup on the server so that future devices can
+   * restore the same identity key pair.
+   *
+   * Safe to call concurrently — only one init runs at a time.
    */
-  initialize: async (userId: string) => {
+  initialize: async (userId: string, password?: string) => {
     if (!userId) return;
 
     const state = get();
@@ -215,57 +236,132 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
     _initializationPromise = (async () => {
 
-    // Try to load existing keys
-    const existing = loadKeys(userId);
-    if (existing) {
-      logger.debug('[E2EE] Loaded existing key pair from localStorage');
+      // ── 1. Try localStorage ──────────────────────────────────────────
+      const existing = loadKeys(userId);
+      if (existing) {
+        logger.debug('[E2EE] Loaded existing key pair from localStorage');
 
-      try {
-        const payload = await buildKeyUploadPayload(existing.publicKey);
-        await api.post('/keys/upload', payload);
-        logger.debug('[E2EE] Re-synced key with server');
-      } catch (e) {
-        logger.warn('[E2EE] Key re-sync failed (non-fatal):', e);
+        // Ensure server backup exists (non-blocking)
+        if (password) {
+          ensureServerBackup(existing.privateKey, existing.publicKey, password).catch(e =>
+            logger.warn('[E2EE] Backup sync failed (non-fatal):', e)
+          );
+        }
+
+        try {
+          const payload = await buildKeyUploadPayload(existing.publicKey);
+          await api.post('/keys/upload', payload);
+          logger.debug('[E2EE] Re-synced key with server');
+        } catch (e) {
+          logger.warn('[E2EE] Key re-sync failed (non-fatal):', e);
+        }
+
+        // Restore persisted group sender keys
+        const ownGroupKeys = await hydrateOwnGroupKeys(userId);
+        const groupSenderKeys = await hydrateReceivedGroupKeys(userId);
+
+        // Restore key epoch from localStorage
+        const savedEpoch = parseInt(localStorage.getItem(`zynk_epoch_${userId}`) || '1', 10);
+
+        set({
+          isInitialized: true,
+          userId,
+          publicKey: existing.publicKey,
+          privateKey: existing.privateKey,
+          aesKeys: new Map(),
+          ownGroupKeys,
+          groupSenderKeys,
+          keyEpoch: savedEpoch,
+        });
+        return;
       }
 
-      // Restore persisted group sender keys
-      const ownGroupKeys = await hydrateOwnGroupKeys(userId);
-      const groupSenderKeys = await hydrateReceivedGroupKeys(userId);
+      // ── 2. Try server backup (new device / cleared storage) ─────────
+      if (password) {
+        try {
+          const backupRes = await api.get('/keys/backup');
+          if (backupRes.data && backupRes.data.encrypted_private_key) {
+            logger.debug('[E2EE] Found server backup, restoring...');
+            const privateKey = await decryptPrivateKeyFromBackup(backupRes.data, password);
+            const publicKey = backupRes.data.public_key;
+            const keyVersion = backupRes.data.key_version || 1;
 
-      set({
-        isInitialized: true,
-        userId,
-        publicKey: existing.publicKey,
-        privateKey: existing.privateKey,
-        aesKeys: new Map(),
-        ownGroupKeys,
-        groupSenderKeys,
-      });
-      return;
-    }
+            // Persist locally for future sessions
+            storeKeys(userId, publicKey, privateKey);
+            localStorage.setItem(`zynk_epoch_${userId}`, String(keyVersion));
 
-    // First time — generate and upload
-    logger.debug('[E2EE] Generating new key pair...');
-    try {
-      const kp = await generateKeyPair();
-      const payload = await buildKeyUploadPayload(kp.publicKey);
-      await api.post('/keys/upload', payload);
-      storeKeys(userId, kp.publicKey, kp.privateKey);
-      logger.debug('[E2EE] Keys generated and uploaded');
+            // Re-sync identity key with server
+            try {
+              const payload = await buildKeyUploadPayload(publicKey);
+              await api.post('/keys/upload', payload);
+            } catch (e) {
+              logger.warn('[E2EE] Key re-sync failed (non-fatal):', e);
+            }
 
-      set({
-        isInitialized: true,
-        userId,
-        publicKey: kp.publicKey,
-        privateKey: kp.privateKey,
-        aesKeys: new Map(),
-        ownGroupKeys: new Map(),
-        groupSenderKeys: new Map(),
-      });
-    } catch (err) {
-      logger.error('[E2EE] Key generation/upload failed:', err);
-      throw err;
-    }
+            set({
+              isInitialized: true,
+              userId,
+              publicKey,
+              privateKey,
+              aesKeys: new Map(),
+              ownGroupKeys: new Map(),
+              groupSenderKeys: new Map(),
+              keyEpoch: keyVersion,
+            });
+            logger.debug('[E2EE] Keys restored from server backup (v' + keyVersion + ')');
+            return;
+          }
+        } catch (e: unknown) {
+          // 404 = no backup exists, which is fine (first-time user)
+          if (e && typeof e === 'object' && 'response' in e && (e as { response: { status: number } }).response?.status !== 404) {
+            logger.warn('[E2EE] Backup restore attempt failed:', e);
+          }
+        }
+      }
+
+      // ── 3. Generate new keys ─────────────────────────────────────────
+      // Only generate if password is available (login/register flow).
+      // During hydrate (no password), we must NOT generate new keys because
+      // that would orphan all previous messages encrypted with the old key.
+      if (!password) {
+        logger.warn('[E2EE] No local keys and no password — cannot initialize. User must re-login.');
+        return;
+      }
+
+      logger.debug('[E2EE] Generating new key pair...');
+      try {
+        const kp = await generateKeyPair();
+        const payload = await buildKeyUploadPayload(kp.publicKey);
+        await api.post('/keys/upload', payload);
+        storeKeys(userId, kp.publicKey, kp.privateKey);
+        localStorage.setItem(`zynk_epoch_${userId}`, '1');
+        logger.debug('[E2EE] Keys generated and uploaded');
+
+        // Create server backup if password is available
+        if (password) {
+          try {
+            const backup = await encryptPrivateKeyForBackup(kp.privateKey, kp.publicKey, password, 1);
+            await api.post('/keys/backup', backup);
+            logger.debug('[E2EE] Key backup created on server');
+          } catch (e) {
+            logger.warn('[E2EE] Backup creation failed (non-fatal):', e);
+          }
+        }
+
+        set({
+          isInitialized: true,
+          userId,
+          publicKey: kp.publicKey,
+          privateKey: kp.privateKey,
+          aesKeys: new Map(),
+          ownGroupKeys: new Map(),
+          groupSenderKeys: new Map(),
+          keyEpoch: 1,
+        });
+      } catch (err) {
+        logger.error('[E2EE] Key generation/upload failed:', err);
+        throw err;
+      }
 
     })(); // end of _initializationPromise IIFE
 
@@ -277,35 +373,88 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   /**
-   * Encrypt plaintext for a remote user (1:1). Returns JSON string of v3 EncryptedEnvelope.
+   * Encrypt plaintext for a remote user (1:1).
+   * Uses v5 epoch-based encryption when available, falling back to v3.
    */
   encrypt: async (remoteUserId: string, plaintext: string): Promise<string> => {
-    const { privateKey, publicKey, aesKeys } = get();
+    const { privateKey, publicKey, aesKeys, keyEpoch } = get();
     if (!privateKey || !publicKey) throw new Error('E2EE not initialized');
 
-    let aesKey = aesKeys.get(remoteUserId);
+    // Cache key by userId + epoch for v5
+    const cacheKey = `${remoteUserId}:e${keyEpoch}`;
+    let aesKey = aesKeys.get(cacheKey);
     if (!aesKey) {
       const remotePub = await fetchRemotePublicKey(remoteUserId);
       if (!remotePub) throw new Error('Cannot fetch remote public key');
-      aesKey = await deriveAESKey(privateKey, remotePub);
-      aesKeys.set(remoteUserId, aesKey);
+      aesKey = await deriveEpochAESKey(privateKey, remotePub, keyEpoch);
+      aesKeys.set(cacheKey, aesKey);
       set({ aesKeys: new Map(aesKeys) });
+
+      // Archive the conversation key in background (non-blocking)
+      archiveConversationKey(aesKey, remoteUserId, keyEpoch, remotePub).catch(() => { });
     }
 
-    return encryptText(aesKey, plaintext, publicKey);
+    return encryptTextV5(aesKey, plaintext, publicKey, keyEpoch);
   },
 
   /**
-   * Decrypt ciphertext from a remote user (1:1). Returns plaintext.
+   * Decrypt ciphertext from a remote user (1:1).
+   * Handles both v3 (legacy) and v5 (epoch-based) envelopes.
    */
   decrypt: async (remoteUserId: string, ciphertextJson: string): Promise<string> => {
     const { privateKey, aesKeys } = get();
     if (!privateKey) throw new Error('E2EE not initialized');
 
-    if (!isValidEncryptedMessage(ciphertextJson)) {
+    if (!isValidEncryptedMessage(ciphertextJson) && !isV5EncryptedMessage(ciphertextJson)) {
       return ciphertextJson;
     }
 
+    // ── v5 epoch-based decryption ───────────────────────────────────
+    if (isV5EncryptedMessage(ciphertextJson)) {
+      const msgEpoch = getEnvelopeEpoch(ciphertextJson);
+      const cacheKey = `${remoteUserId}:e${msgEpoch}`;
+      let aesKey = aesKeys.get(cacheKey);
+
+      if (!aesKey) {
+        const remotePub = await fetchRemotePublicKey(remoteUserId);
+        if (!remotePub) return '[Cannot decrypt — missing key]';
+        try {
+          aesKey = await deriveEpochAESKey(privateKey, remotePub, msgEpoch);
+          aesKeys.set(cacheKey, aesKey);
+          set({ aesKeys: new Map(aesKeys) });
+        } catch {
+          return '[Decryption failed — key derivation error]';
+        }
+      }
+
+      try {
+        return await decryptTextV5(aesKey, ciphertextJson);
+      } catch {
+        // Epoch key might be from a rotated identity key — try re-deriving
+        logger.warn('[E2EE] v5 decrypt failed, retrying with fresh key...');
+        try {
+          aesKeys.delete(cacheKey);
+          const remotePub = await fetchRemotePublicKey(remoteUserId);
+          if (!remotePub) return '[Decryption failed — missing key]';
+          aesKey = await deriveEpochAESKey(privateKey, remotePub, msgEpoch);
+          aesKeys.set(cacheKey, aesKey);
+          set({ aesKeys: new Map(aesKeys) });
+          return await decryptTextV5(aesKey, ciphertextJson);
+        } catch {
+          // Last resort: try v3 derivation (cross-version compat)
+          try {
+            const remotePub = await fetchRemotePublicKey(remoteUserId);
+            if (!remotePub) return '[Decryption failed]';
+            const v3Key = await deriveAESKey(privateKey, remotePub);
+            return await decryptText(v3Key, ciphertextJson);
+          } catch {
+            return '[Decryption failed]';
+          }
+        }
+      }
+    }
+
+    // ── v3 legacy decryption ────────────────────────────────────────
     let aesKey = aesKeys.get(remoteUserId);
     if (!aesKey) {
       const remotePub = await fetchRemotePublicKey(remoteUserId);
@@ -665,6 +814,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       aesKeys: new Map(),
       groupSenderKeys: new Map(),
       ownGroupKeys: new Map(),
+      keyEpoch: 1,
     });
   },
 }));
@@ -736,4 +886,111 @@ async function fetchRemotePublicKey(remoteUserId: string): Promise<string | null
     logger.error('[E2EE] Failed to fetch public key for', remoteUserId);
     return null;
   }
+}
+
+// ========== Server backup helpers ==========
+
+/**
+ * Ensure that an encrypted key backup exists on the server.
+ * If no backup is found, creates one. If one exists, verifies
+ * the public key matches (detects local key corruption).
+ */
+async function ensureServerBackup(
+  privateKey: string,
+  publicKey: string,
+  password: string,
+): Promise<void> {
+  try {
+    const res = await api.get('/keys/backup');
+    if (res.data && res.data.encrypted_private_key) {
+      // Backup exists — verify public key matches
+      if (res.data.public_key !== publicKey) {
+        logger.warn('[E2EE] Local key differs from backup — updating backup');
+        const backup = await encryptPrivateKeyForBackup(privateKey, publicKey, password);
+        await api.post('/keys/backup', backup);
+      }
+      return;
+    }
+  } catch (e: unknown) {
+    if (e && typeof e === 'object' && 'response' in e && (e as { response: { status: number } }).response?.status !== 404) throw e;
+  }
+
+  // No backup exists — create one
+  const backup = await encryptPrivateKeyForBackup(privateKey, publicKey, password);
+  await api.post('/keys/backup', backup);
+  logger.debug('[E2EE] Created new server backup');
+}
+
+/**
+ * Archive a conversation AES key to the server for message history.
+ * Keys are encrypted with the PBKDF2 backup key before upload.
+ * This runs in the background and failures are non-fatal.
+ */
+async function archiveConversationKey(
+  aesKey: CryptoKey,
+  remoteUserId: string,
+  epoch: number,
+  remotePublicKey: string,
+): Promise<void> {
+  try {
+    const userId = useCryptoStore.getState().userId;
+    if (!userId) return;
+
+    const keyB64 = await exportAESKey(aesKey);
+
+    // Find the conversation ID for this remote user
+    const convRes = await api.get('/messages/conversations/list');
+    const conversations = convRes.data.conversations || [];
+    const conv = conversations.find((c: { type: string; other_user?: { user_id: string } }) =>
+      c.type === 'one_to_one' && c.other_user?.user_id === remoteUserId
+    );
+    if (!conv) return; // No conversation yet, will archive when one exists
+
+    // We need the backup key to encrypt the archive entry.
+    // Since we may not have the password in memory, we encrypt with
+    // a deterministic key derived from the identity private key.
+    const { privateKey } = useCryptoStore.getState();
+    if (!privateKey) return;
+
+    // Use identity key as archive encryption key (not password-based,
+    // since password may not be available at this point)
+    const archiveKey = await deriveArchiveEncryptionKey(privateKey);
+    const { ct, iv } = await encryptKeyForArchive(keyB64, archiveKey);
+
+    await api.post('/keys/message-keys/archive', {
+      archives: [{
+        conversation_id: conv.id,
+        key_epoch: epoch,
+        encrypted_key: ct,
+        iv,
+        remote_public_key: remotePublicKey,
+      }],
+    });
+  } catch {
+    // Best-effort archival — non-fatal
+  }
+}
+
+/**
+ * Derive a deterministic archive encryption key from the identity private key.
+ * Used to encrypt message key archives when the password isn't available.
+ * Since the private key is backed up, any device with the backup can derive this.
+ */
+async function deriveArchiveEncryptionKey(privateKeyB64: string): Promise<CryptoKey> {
+  const privBytes = new Uint8Array(base64ToArrayBuffer(privateKeyB64));
+  // Use a hash of the private key as HKDF input
+  const hash = await crypto.subtle.digest('SHA-256', privBytes);
+  const hkdfKey = await crypto.subtle.importKey('raw', hash, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new TextEncoder().encode('zynk-archive-key'),
+      info: new TextEncoder().encode('message-key-archive'),
+    },
+    hkdfKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
 }

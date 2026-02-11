@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log*
+dist
+coverage
+.env
+.env.*
+!.env.production.template
+*.log
+.git
+.gitignore
+README.md
+tests
+jest.config.ts
+uploads/*
+!uploads/.gitkeep

@@ -13,6 +13,20 @@ import { connectRedis } from './db/redis';
 import { errorHandler, notFound } from './middleware/error';
 import { setupWebSocket } from './websocket';
 
+// Production infrastructure imports
+import { logger } from './lib/logger';
+import { requestLogging } from './middleware/requestLogging';
+import { metricsMiddleware, metricsHandler } from './lib/metrics';
+import { healthSimple, healthLive, healthReady, healthDeep } from './lib/healthCheck';
+
+// In production, redirect all console.error/warn to structured logger
+// so legacy code paths still produce structured JSON logs
+if (process.env.NODE_ENV === 'production') {
+  console.error = (...args: any[]) => logger.error({ args }, String(args[0]));
+  console.warn = (...args: any[]) => logger.warn({ args }, String(args[0]));
+  console.log = (...args: any[]) => logger.info({ args }, String(args[0]));
+}
+
 // Import routes
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
@@ -21,8 +35,11 @@ import groupRoutes from './routes/groups';
 import callRoutes from './routes/calls';
 import fileRoutes from './routes/files';
 import keyRoutes from './routes/keys';
+import keyBackupRoutes from './routes/keyBackup';
 import reportRoutes from './routes/reports';
 import pollRoutes from './routes/polls';
+import adminRoutes from './routes/admin';
+import accountRoutes from './routes/account';
 
 const app = express();
 const server = http.createServer(app);
@@ -100,15 +117,16 @@ app.use(compression({
   },
 }));
 
-// ========== Logging ==========
-// Use 'combined' format in production for better log aggregation
+// ========== Structured Logging & Observability ==========
+// Correlation ID + structured JSON logging for all requests
+app.use(requestLogging);
+
+// Prometheus metrics collection
+app.use(metricsMiddleware);
+
+// Morgan for access logs (development only — production uses structured logger)
 if (config.nodeEnv !== 'production') {
   app.use(morgan('dev'));
-} else {
-  // Production: Apache combined log format, skip health checks
-  app.use(morgan('combined', {
-    skip: (req) => req.path === '/api/health',
-  }));
 }
 
 app.use(express.json({ limit: config.express.bodyLimit }));
@@ -172,13 +190,20 @@ app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1/calls', callRoutes);
 app.use('/api/v1/files', fileRoutes);
 app.use('/api/v1/keys', keyRoutes);
+app.use('/api/v1/keys', keyBackupRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/polls', pollRoutes);
+app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/account', accountRoutes);
 
-// Health check (no sensitive info)
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// ========== Health Check Endpoints ==========
+app.get('/api/health', healthSimple);        // Load balancer
+app.get('/api/health/live', healthLive);      // Kubernetes liveness
+app.get('/api/health/ready', healthReady);    // Kubernetes readiness
+app.get('/api/health/deep', healthDeep);      // Deep diagnostics
+
+// ========== Prometheus Metrics Endpoint ==========
+app.get('/metrics', metricsHandler);
 
 // Error handling
 app.use(notFound);
@@ -192,31 +217,37 @@ async function start() {
   try {
     // Test database connection
     await prisma.$queryRaw`SELECT 1`;
-    console.log('PostgreSQL connected via Prisma');
+    logger.info('PostgreSQL connected via Prisma');
 
     // Connect Redis
     try {
       await connectRedis();
-      console.log('Redis connected');
+      logger.info('Redis connected');
     } catch (error) {
-      console.warn('Redis connection failed (continuing without Redis):', (error as Error).message);
+      logger.warn({ error }, 'Redis connection failed (continuing without Redis)');
     }
 
     server.listen(config.port, () => {
-      console.log(`
+      logger.info({
+        port: config.port,
+        env: config.nodeEnv,
+        cors: config.cors.origin,
+      }, `Zynk Server started on port ${config.port}`);
+
+      if (config.nodeEnv !== 'production') {
+        console.log(`
 ╔══════════════════════════════════════════════╗
-║                                              ║
-║    🔐 Zynk Server running on port ${config.port}       ║
-║    📡 WebSocket ready                        ║
-║    🌐 API: http://localhost:${config.port}/api/v1      ║
-║    ❤️  Health: http://localhost:${config.port}/api/health║
-║    🛡️  CORS Allowed: ${config.cors.origin.join(', ')}
-║                                              ║
+║  🔐 Zynk Server running on port ${config.port}        ║
+║  📡 WebSocket ready                         ║
+║  🌐 API: http://localhost:${config.port}/api/v1       ║
+║  📊 Metrics: http://localhost:${config.port}/metrics   ║
+║  ❤️  Health: http://localhost:${config.port}/api/health ║
 ╚══════════════════════════════════════════════╝
-      `);
+        `);
+      }
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    logger.fatal({ error }, 'Failed to start server');
     process.exit(1);
   }
 }
@@ -225,31 +256,31 @@ start();
 
 // ========== Graceful Shutdown ==========
 const shutdown = async (signal: string) => {
-  console.log(`\n${signal} received. Shutting down gracefully...`);
+  logger.info({ signal }, 'Graceful shutdown initiated');
 
   // Stop accepting new connections
   server.close(async () => {
-    console.log('HTTP server closed');
+    logger.info('HTTP server closed');
 
     try {
       // Close WebSocket connections
       io.close();
-      console.log('WebSocket server closed');
+      logger.info('WebSocket server closed');
 
       // Disconnect database
       await prisma.$disconnect();
-      console.log('Database disconnected');
+      logger.info('Database disconnected');
 
       process.exit(0);
     } catch (error) {
-      console.error('Error during shutdown:', error);
+      logger.error({ error }, 'Error during shutdown');
       process.exit(1);
     }
   });
 
   // Force exit after 10 seconds if graceful shutdown fails
   setTimeout(() => {
-    console.error('Forced shutdown after timeout');
+    logger.fatal('Forced shutdown after timeout');
     process.exit(1);
   }, 10000);
 };

@@ -1,0 +1,931 @@
+openapi: 3.1.0
+info:
+  title: Zynk API
+  description: |
+    End-to-end encrypted messaging platform API.
+    
+    ## Authentication
+    All authenticated endpoints require a Bearer token in the `Authorization` header.
+    Tokens are obtained via `/auth/login` or `/auth/register`.
+    
+    ## Rate Limiting
+    - Global: 100 requests / 15 minutes per IP
+    - Login: 5 attempts / 15 minutes per IP
+    - Registration: 3 attempts / 15 minutes per IP
+    - Messages: 60 per minute per user
+    - File uploads: 20 per hour per user
+    
+    ## Encryption
+    All message content is end-to-end encrypted using the Signal Protocol.
+    The server only stores encrypted ciphertext.
+  version: 1.0.0
+  contact:
+    name: Zynk Team
+  license:
+    name: MIT
+
+servers:
+  - url: /api/v1
+    description: API v1
+
+tags:
+  - name: Auth
+    description: Authentication and session management
+  - name: Users
+    description: User profiles and discovery
+  - name: Messages
+    description: Conversations and messaging
+  - name: Groups
+    description: Group chat management
+  - name: Files
+    description: File upload and download
+  - name: Keys
+    description: E2EE key bundle management
+  - name: Calls
+    description: Voice/video call signaling
+  - name: Polls
+    description: In-chat polls
+  - name: Reports
+    description: Content moderation reports
+  - name: Health
+    description: Health check endpoints
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+      required: [error]
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_id:
+          type: string
+          format: uuid
+        encrypted_content:
+          type: string
+        message_type:
+          type: string
+          enum: [text, image, file, audio, video]
+        status:
+          type: string
+          enum: [sent, delivered, read]
+        created_at:
+          type: string
+          format: date-time
+        edited_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [one_to_one, group]
+        last_message:
+          $ref: '#/components/schemas/Message'
+        unread_count:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+
+    Group:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        conversation_id:
+          type: string
+          format: uuid
+        created_by:
+          type: string
+          format: uuid
+        member_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        device_name:
+          type: string
+        platform:
+          type: string
+        last_active_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    File:
+      type: object
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        file_size:
+          type: integer
+        mime_type:
+          type: string
+        content_hash:
+          type: string
+        thumbnail_path:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        uptime:
+          type: number
+        checks:
+          type: object
+          properties:
+            database:
+              type: object
+              properties:
+                status: { type: string }
+                latency_ms: { type: number }
+            redis:
+              type: object
+              properties:
+                status: { type: string }
+                latency_ms: { type: number }
+
+  parameters:
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+
+    Before:
+      name: before
+      in: query
+      description: Cursor for pagination (message ID)
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+    X-Idempotency-Key:
+      description: Idempotency key for safe retries
+      schema:
+        type: string
+        format: uuid
+
+    X-Correlation-ID:
+      description: Request correlation ID for tracing
+      schema:
+        type: string
+
+    X-RateLimit-Limit:
+      description: Rate limit ceiling
+      schema:
+        type: integer
+
+    X-RateLimit-Remaining:
+      description: Remaining requests in current window
+      schema:
+        type: integer
+
+    X-RateLimit-Reset:
+      description: Time when the rate limit resets (epoch seconds)
+      schema:
+        type: integer
+
+paths:
+  # ======================== Auth ========================
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new account
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 64
+                  pattern: '^[a-zA-Z0-9_]+$'
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                device_name:
+                  type: string
+                  default: Web Browser
+                device_fingerprint:
+                  type: string
+                public_key:
+                  type: string
+              required: [username, password]
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: { type: string, format: uuid }
+                  username: { type: string }
+                  session_token: { type: string }
+                  refresh_token: { type: string }
+                  expires_at: { type: integer }
+        '409':
+          description: Username taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limited
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login to existing account
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+                device_fingerprint: { type: string }
+                device_name: { type: string, default: Web Browser }
+              required: [username, password]
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: { type: string, format: uuid }
+                  session_token: { type: string }
+                  refresh_token: { type: string }
+                  device_id: { type: string, format: uuid }
+                  expires_at: { type: integer }
+        '401':
+          description: Invalid credentials
+        '403':
+          description: Max devices reached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  code: { type: string, enum: [MAX_DEVICES_REACHED] }
+                  max_devices: { type: integer }
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+        '429':
+          description: Rate limited
+
+  /auth/force-login:
+    post:
+      tags: [Auth]
+      summary: Remove a device and login when at max device limit
+      operationId: forceLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+                remove_device_id: { type: string, format: uuid }
+                device_fingerprint: { type: string }
+                device_name: { type: string }
+              required: [username, password, remove_device_id]
+      responses:
+        '200':
+          description: Force login successful
+        '401':
+          description: Invalid credentials
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh session token
+      operationId: refreshToken
+      security:
+        - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_token: { type: string }
+                  refresh_token: { type: string }
+                  expires_at: { type: integer }
+        '401':
+          description: Invalid refresh token
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout current session
+      operationId: logout
+      security:
+        - BearerAuth: []
+      responses:
+        '204':
+          description: Logged out
+
+  /auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Logout from all devices
+      operationId: logoutAll
+      security:
+        - BearerAuth: []
+      responses:
+        '204':
+          description: All sessions terminated
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user info
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+  /auth/devices:
+    get:
+      tags: [Auth]
+      summary: List connected devices
+      operationId: listDevices
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+
+  /auth/devices/{deviceId}:
+    delete:
+      tags: [Auth]
+      summary: Remove a device
+      operationId: removeDevice
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Device removed
+
+  # ======================== Messages ========================
+  /messages:
+    post:
+      tags: [Messages]
+      summary: Send an encrypted message
+      operationId: sendMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/headers/X-Idempotency-Key'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversation_id: { type: string, format: uuid }
+                recipient_id: { type: string, format: uuid }
+                encrypted_content: { type: string }
+                message_type:
+                  type: string
+                  enum: [text, image, file, audio, video]
+                  default: text
+                reply_to_id: { type: string, format: uuid }
+                expires_in_seconds: { type: integer }
+              required: [encrypted_content]
+      responses:
+        '201':
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message_id: { type: string, format: uuid }
+                  conversation_id: { type: string, format: uuid }
+                  status: { type: string }
+                  created_at: { type: string, format: date-time }
+        '429':
+          description: Rate limited
+
+  /messages/conversations/list:
+    get:
+      tags: [Messages]
+      summary: List all conversations
+      operationId: listConversations
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Conversation'
+
+  /messages/search:
+    post:
+      tags: [Messages]
+      summary: Search messages
+      operationId: searchMessages
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query: { type: string }
+                conversation_id: { type: string, format: uuid }
+                limit: { type: integer, default: 20 }
+              required: [query]
+      responses:
+        '200':
+          description: Search results
+
+  /messages/{conversationId}:
+    get:
+      tags: [Messages]
+      summary: Get messages in conversation
+      operationId: getMessages
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Before'
+      responses:
+        '200':
+          description: Message list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+                  has_more: { type: boolean }
+
+  /messages/{messageId}:
+    put:
+      tags: [Messages]
+      summary: Edit a message
+      operationId: editMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                encrypted_content: { type: string }
+              required: [encrypted_content]
+      responses:
+        '200':
+          description: Message updated
+    delete:
+      tags: [Messages]
+      summary: Delete a message
+      operationId: deleteMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+        - name: for_everyone
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Message deleted
+
+  /messages/{messageId}/read:
+    put:
+      tags: [Messages]
+      summary: Mark message as read
+      operationId: markRead
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Marked as read
+
+  /messages/{messageId}/react:
+    post:
+      tags: [Messages]
+      summary: React to a message
+      operationId: reactToMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                emoji: { type: string }
+              required: [emoji]
+      responses:
+        '200':
+          description: Reaction toggled
+
+  # ======================== Groups ========================
+  /groups:
+    post:
+      tags: [Groups]
+      summary: Create a group
+      operationId: createGroup
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 255 }
+                description: { type: string, maxLength: 500 }
+                avatar_url: { type: string, format: uri, nullable: true }
+                member_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  minItems: 1
+                  maxItems: 31
+              required: [name, member_ids]
+      responses:
+        '201':
+          description: Group created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+
+  /groups/{groupId}:
+    get:
+      tags: [Groups]
+      summary: Get group details
+      operationId: getGroup
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Group details
+    put:
+      tags: [Groups]
+      summary: Update group info
+      operationId: updateGroup
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                avatar_url: { type: string }
+      responses:
+        '200':
+          description: Group updated
+
+  /groups/{groupId}/members:
+    post:
+      tags: [Groups]
+      summary: Add members to group
+      operationId: addGroupMembers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                member_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+              required: [member_ids]
+      responses:
+        '200':
+          description: Members added
+
+  # ======================== Files ========================
+  /files/upload:
+    post:
+      tags: [Files]
+      summary: Upload a file
+      operationId: uploadFile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                conversation_id:
+                  type: string
+                  format: uuid
+              required: [file]
+      responses:
+        '201':
+          description: File uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+        '429':
+          description: Rate limited
+
+  /files/{fileId}/download:
+    get:
+      tags: [Files]
+      summary: Download a file
+      operationId: downloadFile
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: File content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # ======================== Keys ========================
+  /keys/bundle:
+    post:
+      tags: [Keys]
+      summary: Upload key bundle (identity key, signed pre-key, one-time pre-keys)
+      operationId: uploadKeyBundle
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                identity_key: { type: string }
+                signed_pre_key:
+                  type: object
+                  properties:
+                    key_id: { type: integer }
+                    public_key: { type: string }
+                    signature: { type: string }
+                one_time_pre_keys:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key_id: { type: integer }
+                      public_key: { type: string }
+      responses:
+        '200':
+          description: Keys stored
+
+  /keys/bundle/{userId}:
+    get:
+      tags: [Keys]
+      summary: Fetch a user's key bundle for establishing session
+      operationId: getKeyBundle
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Key bundle
+
+  # ======================== Health ========================
+  /health:
+    get:
+      tags: [Health]
+      summary: Simple health check (load balancer)
+      operationId: healthSimple
+      responses:
+        '200':
+          description: Service is running
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe (Kubernetes)
+      operationId: healthLive
+      responses:
+        '200':
+          description: Service is alive
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe (Kubernetes)
+      operationId: healthReady
+      responses:
+        '200':
+          description: Service is ready
+        '503':
+          description: Service not ready
+
+  /health/deep:
+    get:
+      tags: [Health]
+      summary: Deep health check with diagnostics
+      operationId: healthDeep
+      responses:
+        '200':
+          description: All systems healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: One or more systems unhealthy

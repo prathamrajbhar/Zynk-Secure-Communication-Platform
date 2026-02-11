@@ -5,6 +5,10 @@ import { redis, isRedisAvailable } from '../db/redis';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { ConversationType, MessageType, MessageStatus } from '@prisma/client';
+import { messageSendRateLimit } from '../middleware/rateLimiter';
+import { idempotencyKey } from '../middleware/idempotency';
+import { logger } from '../lib/logger';
+import { businessMetrics } from '../lib/metrics';
 
 const router = Router();
 
@@ -197,7 +201,7 @@ router.route('/conversations')
       const formattedConversations = await getUserConversations(req.userId!);
       return res.json({ conversations: formattedConversations });
     } catch (error) {
-      console.error('Get conversations error:', error);
+      logger.error({ error }, 'Get conversations error');
       return res.status(500).json({ error: 'Failed to fetch conversations' });
     }
   })
@@ -487,7 +491,7 @@ const sendMessageSchema = z.object({
   expires_in_seconds: z.number().optional(),
 });
 
-router.post('/', authenticate, validate(sendMessageSchema), async (req: AuthRequest, res: Response) => {
+router.post('/', authenticate, messageSendRateLimit, idempotencyKey, validate(sendMessageSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { conversation_id, recipient_id, encrypted_content, message_type, reply_to_id, expires_in_seconds } = req.body;
 
@@ -557,6 +561,9 @@ router.post('/', authenticate, validate(sendMessageSchema), async (req: AuthRequ
       return msg;
     });
 
+    // Track message sent metric
+    businessMetrics.messagesSent.inc({ type: message_type || 'text' });
+
     return res.status(201).json({
       message_id: message.id,
       conversation_id: message.conversation_id,
@@ -564,7 +571,7 @@ router.post('/', authenticate, validate(sendMessageSchema), async (req: AuthRequ
       created_at: message.created_at,
     });
   } catch (error) {
-    console.error('Send message error:', error);
+    logger.error({ error, userId: req.userId }, 'Failed to send message');
     return res.status(500).json({ error: 'Failed to send message' });
   }
 });

@@ -7,6 +7,9 @@ import prisma from '../db/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { config } from '../config';
 import sharp from 'sharp';
+import { fileUploadRateLimit } from '../middleware/rateLimiter';
+import { logger } from '../lib/logger';
+import { businessMetrics } from '../lib/metrics';
 
 const router = Router();
 
@@ -71,7 +74,7 @@ const upload = multer({
 });
 
 // POST /files/upload
-router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequest, res: Response) => {
+router.post('/upload', authenticate, fileUploadRateLimit, upload.single('file'), async (req: AuthRequest, res: Response) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided' });
@@ -141,6 +144,9 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
       }
     });
 
+    // Track file upload metric
+    businessMetrics.fileUploads.inc({ type: result.mime_type.split('/')[0] || 'other' });
+
     return res.status(201).json({
       file_id: result.id,
       filename: result.filename,
@@ -151,7 +157,7 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
       created_at: result.created_at,
     });
   } catch (error) {
-    console.error('File upload error:', error);
+    logger.error({ error, userId: (req as any).userId }, 'File upload failed');
     return res.status(500).json({ error: 'Upload failed' });
   }
 });

@@ -1,0 +1,54 @@
+# ============================================================================
+# Prometheus Configuration — Zynk
+# ============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Zynk API Server metrics
+  - job_name: 'zynk-server'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['server:8000']
+        labels:
+          service: 'zynk-api'
+    # In production, use service discovery:
+    # dns_sd_configs:
+    #   - names: ['server']
+    #     type: 'A'
+    #     port: 8000
+
+  # PostgreSQL metrics (via postgres_exporter)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgresql'
+
+  # Redis metrics (via redis_exporter)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+
+  # Nginx metrics (via nginx_exporter)  
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+        labels:
+          service: 'nginx'
+
+  # Node.js process metrics from Prometheus client
+  - job_name: 'node'
+    static_configs:
+      - targets: ['server:8000']
+        labels:
+          service: 'node-runtime'

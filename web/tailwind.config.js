@@ -6,7 +6,7 @@ module.exports = {
     extend: {
       colors: {
         zynk: {
-          50:  '#f0f0ff',
+          50: '#f0f0ff',
           100: '#e4e3ff',
           200: '#cdccfe',
           300: '#aeaafc',
@@ -48,6 +48,7 @@ module.exports = {
         'slide-in-right': 'slide-in-right 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards',
         'slide-in-left': 'slide-in-left 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards',
         'scale-in': 'scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+        'scale-up': 'scale-up 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
         'float': 'float 4s ease-in-out infinite',
         'msg-in-right': 'msg-in-right 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards',
         'msg-in-left': 'msg-in-left 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards',
@@ -60,6 +61,12 @@ module.exports = {
         'gradient-flow': 'gradient-flow 6s ease infinite',
         'glow-pulse': 'glow-pulse 2.5s ease-in-out infinite',
         'bounce-in': 'bounce-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
+        'bounce-gentle': 'bounce-gentle 2s ease-in-out infinite',
+        'reaction-pop': 'reaction-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
+        'message-send': 'message-send 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+        'ripple': 'ripple 0.6s ease-out',
+        'shake': 'shake 0.5s ease-in-out',
+        'slide-up-fade': 'slide-up-fade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
       },
       keyframes: {
         'fade-in': {
@@ -135,6 +142,38 @@ module.exports = {
           '0%': { opacity: '0', transform: 'scale(0.9)' },
           '60%': { transform: 'scale(1.02)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
+        },
+        'bounce-gentle': {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-4px)' },
+        },
+        'scale-up': {
+          from: { opacity: '0', transform: 'scale(0.92)' },
+          to: { opacity: '1', transform: 'scale(1)' },
+        },
+        'reaction-pop': {
+          '0%': { transform: 'scale(0)' },
+          '50%': { transform: 'scale(1.3)' },
+          '100%': { transform: 'scale(1)' },
+        },
+        'message-send': {
+          from: { opacity: '0', transform: 'translateY(8px) scale(0.95)' },
+          to: { opacity: '1', transform: 'translateY(0) scale(1)' },
+        },
+        'ripple': {
+          '0%': { transform: 'scale(0)', opacity: '0.5' },
+          '100%': { transform: 'scale(4)', opacity: '0' },
+        },
+        'shake': {
+          '0%, 100%': { transform: 'translateX(0)' },
+          '20%': { transform: 'translateX(-4px)' },
+          '40%': { transform: 'translateX(4px)' },
+          '60%': { transform: 'translateX(-2px)' },
+          '80%': { transform: 'translateX(2px)' },
+        },
+        'slide-up-fade': {
+          from: { opacity: '0', transform: 'translateY(16px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
         },
         'typing-bounce': {
           '0%, 80%, 100%': { transform: 'translateY(0)', opacity: '0.4' },

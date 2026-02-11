@@ -1,0 +1,308 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(zynk_http_requests_total[5m])",
+          "legendFormat": "{{method}} {{route}} {{status_code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "title": "Request Latency (P50 / P95 / P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(zynk_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(zynk_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zynk_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2 },
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "Error Rate (%)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(zynk_http_requests_total{status_code=~\"5..\"}[5m])) / sum(rate(zynk_http_requests_total[5m]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 1, "color": "yellow" },
+              { "value": 5, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Active WebSocket Connections",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 8 },
+      "targets": [
+        {
+          "expr": "zynk_ws_connections_active",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 5000, "color": "yellow" },
+              { "value": 10000, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Active Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 8 },
+      "targets": [
+        {
+          "expr": "zynk_active_users",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "blue" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Messages Sent/min",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(zynk_messages_total[5m])) * 60",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Auth Failures",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(zynk_auth_failures_total[5m])) * 60",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 10, "color": "yellow" },
+              { "value": 50, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Registrations/hr",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(zynk_registrations_total[5m])) * 3600",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Messages by Type",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (type) (zynk_messages_total)",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "File Uploads by Type",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (mime_type) (zynk_file_uploads_total)",
+          "legendFormat": "{{mime_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Database Query Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(zynk_db_query_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95 {{operation}} {{model}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zynk_db_query_duration_seconds_bucket[5m]))",
+          "legendFormat": "P99 {{operation}} {{model}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 5 },
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "Redis Operations/s",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(zynk_redis_operations_total[5m]))",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 50 },
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "title": "Circuit Breaker Status",
+      "type": "state-timeline",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "zynk_circuit_breaker_state",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 70 },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLOSED", "color": "green" } } },
+            { "type": "value", "options": { "1": { "text": "HALF-OPEN", "color": "yellow" } } },
+            { "type": "value", "options": { "2": { "text": "OPEN", "color": "red" } } }
+          ]
+        }
+      }
+    },
+    {
+      "title": "WebSocket Events/s",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "sum by (event) (rate(zynk_ws_messages_total[5m]))",
+          "legendFormat": "{{event}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "title": "Call Activity",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        {
+          "expr": "sum by (type, status) (rate(zynk_calls_total[5m]))",
+          "legendFormat": "{{type}} / {{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 15 },
+          "unit": "short"
+        }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["zynk", "overview"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Zynk - Platform Overview",
+  "uid": "zynk-overview",
+  "version": 1
+}

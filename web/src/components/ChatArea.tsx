@@ -12,9 +12,9 @@ import {
   Check, CheckCheck, Image as ImageIcon, Smile,
   ArrowLeft, Search, Loader2, Reply, X,
   Download, RefreshCw, AlertCircle, Clock, Mic, Users,
-  Star, Pin, MoreHorizontal, Info, ChevronDown,
+  Star, Pin, MoreHorizontal, ChevronDown,
   Upload, BarChart3, Camera, MapPin, FileText, Music,
-  Play, Pause,
+  Play, Pause, Sparkles,
 } from 'lucide-react';
 import { isValidEncryptedMessage } from '@/lib/crypto';
 import api from '@/lib/api';
@@ -489,18 +489,34 @@ export default function ChatArea() {
   /* ── Empty state ── */
   if (!activeConversation) {
     return (
-      <div className="flex-1 hidden lg:flex items-center justify-center bg-[var(--bg-app)]">
-        <div className="text-center px-8">
-          <div className="w-20 h-20 rounded-2xl bg-[var(--accent-subtle)] flex items-center justify-center mx-auto mb-6">
-            <Lock className="w-9 h-9 text-[var(--accent)]" />
+      <div className="flex-1 hidden lg:flex items-center justify-center bg-[var(--bg-app)] relative overflow-hidden">
+        {/* Subtle background pattern */}
+        <div className="absolute inset-0 opacity-[0.03]" style={{
+          backgroundImage: 'radial-gradient(circle at 1px 1px, var(--text-muted) 1px, transparent 0)',
+          backgroundSize: '32px 32px',
+        }} />
+        {/* Gradient orbs */}
+        <div className="absolute top-1/4 -left-20 w-72 h-72 bg-[var(--accent)]/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-1/4 -right-20 w-72 h-72 bg-[var(--accent)]/5 rounded-full blur-3xl" />
+
+        <div className="text-center px-8 relative z-10">
+          <div className="relative inline-block mb-8">
+            <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-[var(--accent)] to-[var(--accent-hover)] flex items-center justify-center shadow-[0_8px_32px_var(--accent-subtle)] rotate-3 hover:rotate-0 transition-transform duration-500">
+              <Lock className="w-10 h-10 text-white" />
+            </div>
+            <div className="absolute -top-2 -right-2 w-8 h-8 rounded-xl bg-[var(--success)] flex items-center justify-center shadow-lg animate-bounce-gentle">
+              <Sparkles className="w-4 h-4 text-white" />
+            </div>
           </div>
-          <h2 className="text-xl font-bold text-[var(--text-primary)] mb-2">Zynk</h2>
-          <p className="text-sm text-[var(--text-muted)] max-w-[260px] mx-auto leading-relaxed">
-            Select a conversation to start messaging securely.
+          <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-2 tracking-tight">Zynk</h2>
+          <p className="text-sm text-[var(--text-muted)] max-w-[280px] mx-auto leading-relaxed">
+            Select a conversation to start messaging securely with end-to-end encryption.
           </p>
-          <div className="flex items-center justify-center gap-1.5 mt-5 text-xs text-[var(--text-muted)]">
-            <Shield className="w-3.5 h-3.5" />
-            <span>End-to-end encrypted</span>
+          <div className="flex items-center justify-center gap-2 mt-6 text-xs text-[var(--text-muted)]">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--bg-wash)] border border-[var(--border)]">
+              <Shield className="w-3.5 h-3.5 text-[var(--success)]" />
+              <span>End-to-end encrypted</span>
+            </div>
           </div>
         </div>
       </div>
@@ -518,41 +534,70 @@ export default function ChatArea() {
           onSelectAll={() => { if (selectedMessages.size === conversationMessages.length) { setSelectedMessages(new Set()); } else { setSelectedMessages(new Set(conversationMessages.map(m => m.id))); } }}
         />
       ) : (
-        <div className="h-14 px-3 flex items-center justify-between chat-header flex-shrink-0">
+        <div className="h-[60px] px-4 flex items-center justify-between chat-header flex-shrink-0 backdrop-blur-xl bg-[var(--header-bg)]/95 border-b border-[var(--border)] relative z-10">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setActiveConversation(null)} className="lg:hidden p-1.5 rounded-full hover:bg-[var(--hover)] flex-shrink-0">
+            <button onClick={() => setActiveConversation(null)} aria-label="Back to conversations" className="lg:hidden p-2 -ml-1 rounded-xl hover:bg-[var(--hover)] active:scale-95 transition-all flex-shrink-0">
               <ArrowLeft className="w-5 h-5 text-[var(--text-secondary)]" />
             </button>
-            <div className="relative">
-              <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0', color)}>
-                {getInitials(convName)}
+            <button onClick={() => {
+              if (conversation?.type === 'group') setShowGroupInfo(true);
+              else setShowUserInfo(!showUserInfo);
+            }} className="flex items-center gap-3 min-w-0 group" aria-label={`View ${convName} info`}>
+              <div className="relative">
+                <div className={cn(
+                  'w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0',
+                  'ring-2 ring-transparent group-hover:ring-[var(--accent)]/30 transition-all duration-300',
+                  color
+                )}>
+                  {getInitials(convName)}
+                </div>
+                {isOnline && (
+                  <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-[var(--success)] rounded-full border-[2.5px] border-[var(--header-bg)] shadow-sm">
+                    <div className="absolute inset-0 rounded-full bg-[var(--success)] animate-ping opacity-40" />
+                  </div>
+                )}
               </div>
-              {isOnline && <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-[var(--success)] rounded-full border-2 border-[var(--header-bg)]" />}
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-[15px] font-semibold text-[var(--text-primary)] truncate leading-tight">{convName}</h3>
-              <p className="text-[12px] text-[var(--text-muted)] leading-tight mt-0.5">
-                {typing.length > 0
-                  ? <span className="text-[var(--accent)] font-medium flex items-center gap-1"><span className="flex gap-0.5"><span className="typing-dot" style={{ width: '4px', height: '4px' }} /><span className="typing-dot" style={{ width: '4px', height: '4px' }} /><span className="typing-dot" style={{ width: '4px', height: '4px' }} /></span>typing</span>
-                  : isOnline ? <span className="text-[var(--success)]">online</span> : 'offline'}
-              </p>
-            </div>
+              <div className="min-w-0">
+                <h3 className="text-[15px] font-semibold text-[var(--text-primary)] truncate leading-tight group-hover:text-[var(--accent)] transition-colors">{convName}</h3>
+                <p className="text-[12px] leading-tight mt-0.5 flex items-center gap-1">
+                  {typing.length > 0
+                    ? <span className="text-[var(--accent)] font-medium flex items-center gap-1.5 animate-fade-in">
+                      <span className="flex gap-[3px] items-center">
+                        <span className="w-[5px] h-[5px] rounded-full bg-[var(--accent)] animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-[5px] h-[5px] rounded-full bg-[var(--accent)] animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-[5px] h-[5px] rounded-full bg-[var(--accent)] animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </span>
+                      typing
+                    </span>
+                    : isOnline
+                      ? <span className="text-[var(--success)] font-medium">online</span>
+                      : <span className="text-[var(--text-muted)]">offline</span>}
+                </p>
+              </div>
+            </button>
           </div>
-          <div className="flex items-center gap-0.5 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0">
             {conversation?.type === 'one_to_one' && (
               <>
-                <button onClick={() => setShowSafetyNumber(true)} className="btn-icon" title="Verify encryption"><Shield className="w-[18px] h-[18px]" /></button>
-                <button onClick={() => handleCall('video')} className="btn-icon"><Video className="w-[18px] h-[18px]" /></button>
-                <button onClick={() => handleCall('audio')} className="btn-icon"><Phone className="w-[18px] h-[18px]" /></button>
+                <button onClick={() => handleCall('video')} className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all" title="Video call" aria-label="Video call">
+                  <Video className="w-[18px] h-[18px]" />
+                </button>
+                <button onClick={() => handleCall('audio')} className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all" title="Voice call" aria-label="Voice call">
+                  <Phone className="w-[18px] h-[18px]" />
+                </button>
               </>
             )}
             {conversation?.type === 'group' && conversation.group_info && (
-              <button onClick={() => setShowGroupInfo(true)} className="btn-icon" title="Group info"><Users className="w-[18px] h-[18px]" /></button>
+              <button onClick={() => setShowGroupInfo(true)} className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all" title="Group info" aria-label="Group info">
+                <Users className="w-[18px] h-[18px]" />
+              </button>
             )}
-            {conversation?.type === 'one_to_one' && (
-              <button onClick={() => setShowUserInfo(!showUserInfo)} className={cn('btn-icon', showUserInfo && 'text-[var(--accent)]')} title="Contact info"><Info className="w-[18px] h-[18px]" /></button>
-            )}
-            <button onClick={() => setShowSearch(!showSearch)} className="btn-icon"><Search className="w-[18px] h-[18px]" /></button>
+            <button onClick={() => setShowSearch(!showSearch)} className={cn('btn-icon transition-all', showSearch && 'text-[var(--accent)] bg-[var(--accent-subtle)]')} title="Search" aria-label="Search in conversation" aria-expanded={showSearch}>
+              <Search className="w-[18px] h-[18px]" />
+            </button>
+            <button onClick={(e) => handleBackgroundContextMenu(e)} className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all" title="More options" aria-label="More options">
+              <MoreHorizontal className="w-[18px] h-[18px]" />
+            </button>
           </div>
         </div>
       )}
@@ -560,67 +605,93 @@ export default function ChatArea() {
       {/* Pinned banner */}
       {!selectionMode && currentPinnedMessages.length > 0 && (
         <button onClick={() => setShowPinnedOverlay(true)}
-          className="w-full px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-surface)] hover:bg-[var(--hover)] transition-colors text-left">
-          <div className="flex items-center gap-2">
-            <Pin className="w-3.5 h-3.5 text-[var(--accent)] flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-[11px] font-semibold text-[var(--accent)]">{currentPinnedMessages.length} Pinned</p>
-              <p className="text-xs text-[var(--text-muted)] truncate">{currentPinnedMessages[currentPinnedMessages.length - 1]?.content || '🔒 Encrypted'}</p>
+          className="w-full px-4 py-2.5 border-b border-[var(--border)] bg-[var(--bg-surface)]/80 backdrop-blur-sm hover:bg-[var(--hover)] transition-all text-left group">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[var(--accent-subtle)] flex items-center justify-center flex-shrink-0 group-hover:bg-[var(--accent)] group-hover:text-white transition-all">
+              <Pin className="w-3.5 h-3.5 text-[var(--accent)] group-hover:text-white" />
             </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-bold text-[var(--accent)] uppercase tracking-wider">{currentPinnedMessages.length} Pinned message{currentPinnedMessages.length > 1 ? 's' : ''}</p>
+              <p className="text-xs text-[var(--text-muted)] truncate mt-0.5">{currentPinnedMessages[currentPinnedMessages.length - 1]?.content || '🔒 Encrypted'}</p>
+            </div>
+            <ChevronDown className="w-4 h-4 text-[var(--text-muted)] rotate-[-90deg]" />
           </div>
         </button>
       )}
 
       {/* Search bar */}
       {showSearch && (
-        <div className="px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-surface)] flex items-center gap-3">
-          <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
-          <input type="text" value={searchQuery} onChange={(e) => handleSearch(e.target.value)}
-            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]"
-            placeholder="Search in conversation..." autoFocus />
-          {isSearching && <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />}
-          {searchResults.length > 0 && <span className="text-xs text-[var(--text-muted)]">{searchResults.length} found</span>}
-          <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} className="p-1 rounded hover:bg-[var(--hover)]">
-            <X className="w-4 h-4 text-[var(--text-muted)]" />
-          </button>
+        <div className="px-4 py-2.5 border-b border-[var(--border)] bg-[var(--bg-surface)]/80 backdrop-blur-sm animate-slide-down">
+          <div className="flex items-center gap-3 bg-[var(--bg-wash)] rounded-xl px-3.5 h-10">
+            <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
+            <input type="text" value={searchQuery} onChange={(e) => handleSearch(e.target.value)}
+              className="flex-1 bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]"
+              placeholder="Search in conversation..." autoFocus aria-label="Search in conversation" />
+            {isSearching && <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />}
+            {searchResults.length > 0 && (
+              <span className="text-[11px] text-[var(--accent)] font-semibold bg-[var(--accent-subtle)] px-2 py-0.5 rounded-full">
+                {searchResults.length}
+              </span>
+            )}
+            <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} className="p-1 rounded-lg hover:bg-[var(--hover)] transition-colors" aria-label="Close search">
+              <X className="w-4 h-4 text-[var(--text-muted)]" />
+            </button>
+          </div>
         </div>
       )}
       {showSearch && searchResults.length > 0 && (
-        <div className="max-h-40 overflow-y-auto border-b border-[var(--border)] bg-[var(--bg-surface)]">
+        <div className="max-h-44 overflow-y-auto border-b border-[var(--border)] bg-[var(--bg-surface)]/95 backdrop-blur-sm scroll-thin" role="listbox" aria-label="Search results">
           {searchResults.map((r) => (
-            <button key={r.message_id} className="w-full text-left px-4 py-2.5 hover:bg-[var(--hover)] transition-colors"
+            <button key={r.message_id} className="w-full text-left px-4 py-3 hover:bg-[var(--hover)] transition-colors flex items-start gap-3 group" role="option" aria-selected="false"
               onClick={() => { handleJumpToMessage(r.message_id); setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
-              <p className="text-xs text-[var(--accent)] font-medium">{r.sender_display_name || r.sender_username}</p>
-              <p className="text-sm text-[var(--text-primary)] truncate">{r.snippet}</p>
+              <div className="w-8 h-8 rounded-lg bg-[var(--bg-wash)] flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-[var(--accent-subtle)]">
+                <Search className="w-3.5 h-3.5 text-[var(--text-muted)] group-hover:text-[var(--accent)]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-[var(--accent)] font-semibold">{r.sender_display_name || r.sender_username}</p>
+                  <span className="text-[10px] text-[var(--text-muted)]">{new Date(r.created_at).toLocaleDateString()}</span>
+                </div>
+                <p className="text-sm text-[var(--text-primary)] truncate mt-0.5">{r.snippet}</p>
+              </div>
             </button>
           ))}
         </div>
       )}
 
       {/* Messages area */}
-      <div ref={messagesContainerRef}
+      <div ref={messagesContainerRef} role="log" aria-label="Messages" aria-live="polite"
         className={cn('flex-1 overflow-y-auto px-4 lg:px-16 py-4 scroll-thin relative', `chat-bg-${chatBackground}`)}
         onContextMenu={handleBackgroundContextMenu}
         onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
 
         {isDragging && (
-          <div className="absolute inset-0 z-20 bg-[var(--accent)]/10 border-2 border-dashed border-[var(--accent)] rounded-xl backdrop-blur-sm flex items-center justify-center">
-            <div className="text-center">
-              <Upload className="w-10 h-10 text-[var(--accent)] mx-auto mb-2" />
-              <p className="text-base font-semibold text-[var(--accent)]">Drop file to send</p>
-              <p className="text-xs text-[var(--text-muted)]">Max 50MB</p>
+          <div className="absolute inset-0 z-20 bg-[var(--accent)]/8 border-2 border-dashed border-[var(--accent)]/50 rounded-2xl backdrop-blur-md flex items-center justify-center animate-fade-in">
+            <div className="text-center p-8 rounded-3xl bg-[var(--bg-surface)]/90 border border-[var(--border)] shadow-2xl">
+              <div className="w-16 h-16 rounded-2xl bg-[var(--accent-subtle)] flex items-center justify-center mx-auto mb-4 animate-bounce-gentle">
+                <Upload className="w-8 h-8 text-[var(--accent)]" />
+              </div>
+              <p className="text-base font-bold text-[var(--text-primary)]">Drop file to send</p>
+              <p className="text-xs text-[var(--text-muted)] mt-1">Images, documents, audio · Max 50MB</p>
             </div>
           </div>
         )}
 
         <div ref={topSentinelRef} className="h-1" />
-        {isLoadingOlder && <div className="flex justify-center py-3"><Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /></div>}
+        {isLoadingOlder && (
+          <div className="flex justify-center py-4" role="status" aria-label="Loading older messages">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--bg-surface)]/80 backdrop-blur-sm border border-[var(--border)]">
+              <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />
+              <span className="text-xs text-[var(--text-muted)] font-medium">Loading older messages...</span>
+            </div>
+          </div>
+        )}
 
         {isLoadingMessages && conversationMessages.length === 0 ? <SkeletonMessageList /> : (
           <>
             <div className="flex justify-center mb-6">
-              <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-wash)] px-4 py-1.5 rounded-md flex items-center gap-1.5 border border-[var(--border)]">
-                <Lock className="w-3 h-3" /> End-to-end encrypted
+              <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-surface)]/80 backdrop-blur-sm px-4 py-2 rounded-full flex items-center gap-2 border border-[var(--border)] shadow-sm">
+                <Lock className="w-3 h-3 text-[var(--success)]" /> End-to-end encrypted
               </span>
             </div>
             {conversationMessages.map((msg: Message, i: number) => {
@@ -629,10 +700,10 @@ export default function ChatArea() {
               return (
                 <div key={msg.id} id={`msg-${msg.id}`} className="message-bubble-wrapper">
                   {showUnreadDivider && (
-                    <div className="flex items-center gap-3 my-4">
-                      <div className="flex-1 h-px bg-[var(--accent)]" />
-                      <span className="text-xs font-semibold text-[var(--accent)] px-2">New messages</span>
-                      <div className="flex-1 h-px bg-[var(--accent)]" />
+                    <div className="flex items-center gap-3 my-5 animate-fade-in">
+                      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
+                      <span className="text-[11px] font-bold text-[var(--accent)] px-3 py-1 rounded-full bg-[var(--accent-subtle)] uppercase tracking-wider">New messages</span>
+                      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
                     </div>
                   )}
                   <MessageBubble message={msg} isOwn={msg.sender_id === user?.id}
@@ -649,17 +720,21 @@ export default function ChatArea() {
           </>
         )}
         {typing.length > 0 && (
-          <div className="flex items-start gap-2 mt-2">
-            <div className="bg-[var(--bg-wash)] rounded-2xl rounded-bl-sm px-4 py-3">
-              <div className="flex items-center gap-1"><div className="typing-dot" /><div className="typing-dot" /><div className="typing-dot" /></div>
+          <div className="flex items-start gap-2 mt-3 animate-fade-in" role="status" aria-label="Someone is typing">
+            <div className="bg-[var(--bg-surface)] rounded-2xl rounded-bl-md px-4 py-3 border border-[var(--border)] shadow-sm" aria-hidden="true">
+              <div className="flex items-center gap-[5px]">
+                <div className="w-[7px] h-[7px] rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1.2s' }} />
+                <div className="w-[7px] h-[7px] rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '200ms', animationDuration: '1.2s' }} />
+                <div className="w-[7px] h-[7px] rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '400ms', animationDuration: '1.2s' }} />
+              </div>
             </div>
           </div>
         )}
         <div ref={messagesEndRef} />
 
         {showScrollBottom && (
-          <button onClick={handleScrollToBottom}
-            className="sticky bottom-4 left-1/2 -translate-x-1/2 z-10 w-10 h-10 rounded-full bg-[var(--bg-surface)] border border-[var(--border)] shadow-lg flex items-center justify-center hover:bg-[var(--hover)] transition-all">
+          <button onClick={handleScrollToBottom} aria-label="Scroll to latest messages"
+            className="sticky bottom-4 left-1/2 -translate-x-1/2 z-10 w-11 h-11 rounded-full bg-[var(--bg-surface)] border border-[var(--border)] shadow-lg backdrop-blur-sm flex items-center justify-center hover:bg-[var(--hover)] hover:shadow-xl hover:scale-105 active:scale-95 transition-all">
             <ChevronDown className="w-5 h-5 text-[var(--text-secondary)]" />
           </button>
         )}
@@ -667,29 +742,36 @@ export default function ChatArea() {
 
       {/* Reply banner */}
       {replyTo && (
-        <div className="mx-4 px-3 py-2 rounded-t-lg bg-[var(--bg-wash)] flex items-center gap-3 border-l-[3px] border-[var(--accent)]">
+        <div className="mx-3 px-3 py-2.5 rounded-t-xl bg-[var(--bg-surface)] flex items-center gap-3 border-l-[3px] border-[var(--accent)] border border-b-0 border-[var(--border)] animate-slide-up">
+          <Reply className="w-4 h-4 text-[var(--accent)] flex-shrink-0 scale-x-[-1]" />
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold text-[var(--accent)]">{replyTo.sender_display_name || replyTo.sender_username || 'You'}</p>
-            <p className="text-xs text-[var(--text-muted)] truncate">
+            <p className="text-xs font-bold text-[var(--accent)]">{replyTo.sender_display_name || replyTo.sender_username || 'You'}</p>
+            <p className="text-xs text-[var(--text-muted)] truncate mt-0.5">
               {replyTo.content && !isValidEncryptedMessage(replyTo.content) ? replyTo.content : '🔒 Encrypted message'}
             </p>
           </div>
-          <button onClick={() => setReplyTo(null)} className="p-1 rounded hover:bg-[var(--hover)]"><X className="w-3.5 h-3.5 text-[var(--text-muted)]" /></button>
+          <button onClick={() => setReplyTo(null)} className="p-1.5 rounded-lg hover:bg-[var(--hover)] transition-colors" aria-label="Cancel reply">
+            <X className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          </button>
         </div>
       )}
 
       {/* Upload progress */}
       {isUploading && (
-        <div className="px-4 py-2 border-t border-[var(--border)] bg-[var(--bg-surface)]">
+        <div className="px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-surface)]/95 backdrop-blur-sm animate-slide-up">
           <div className="flex items-center gap-3">
-            <Paperclip className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+            <div className="w-10 h-10 rounded-xl bg-[var(--accent-subtle)] flex items-center justify-center flex-shrink-0">
+              <Upload className="w-4.5 h-4.5 text-[var(--accent)] animate-pulse" />
+            </div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-[var(--text-secondary)]">Uploading...</span>
-                <span className="text-xs font-bold text-[var(--accent)]">{uploadProgress}%</span>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-semibold text-[var(--text-primary)]">Uploading file...</span>
+                <span className="text-xs font-bold text-[var(--accent)] tabular-nums">{uploadProgress}%</span>
               </div>
-              <div className="w-full h-1 bg-[var(--bg-wash)] rounded-full overflow-hidden">
-                <div className="h-full bg-[var(--accent)] rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+              <div className="w-full h-1.5 bg-[var(--bg-wash)] rounded-full overflow-hidden" role="progressbar" aria-valuenow={uploadProgress} aria-valuemin={0} aria-valuemax={100} aria-label="File upload progress">
+                <div className="h-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] rounded-full transition-all duration-300 ease-out relative" style={{ width: `${uploadProgress}%` }}>
+                  <div className="absolute inset-0 bg-white/20 animate-shimmer" style={{ backgroundSize: '200% 100%' }} />
+                </div>
               </div>
             </div>
           </div>
@@ -705,26 +787,28 @@ export default function ChatArea() {
 
       {/* Input area */}
       {!showVoiceRecorder && (
-        <div className="px-3 pb-3 pt-2 flex-shrink-0 chat-input-bar">
+        <div className="px-3 pb-3 pt-2 flex-shrink-0 chat-input-bar bg-[var(--bg-app)]/95 backdrop-blur-sm">
           <div className="flex items-end gap-2">
-            <div className="flex items-center gap-0.5 pb-0.5">
+            <div className="flex items-center gap-0.5 pb-1">
               <div className="relative" ref={emojiRef}>
-                <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="btn-icon"><Smile className="w-5 h-5" /></button>
+                <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={cn('btn-icon transition-all', showEmojiPicker && 'text-[var(--accent)] bg-[var(--accent-subtle)]')} aria-label="Emoji picker" aria-expanded={showEmojiPicker}>
+                  <Smile className="w-5 h-5" />
+                </button>
                 {showEmojiPicker && (
-                  <div className="absolute bottom-11 left-0 bg-[var(--bg-surface)] border border-[var(--border)] rounded-xl shadow-lg w-72 max-h-72 overflow-hidden z-30">
-                    <div className="p-2 border-b border-[var(--border)]">
+                  <div className="absolute bottom-12 left-0 bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-2xl w-80 max-h-80 overflow-hidden z-30 animate-scale-up" role="dialog" aria-label="Emoji picker">
+                    <div className="p-2.5 border-b border-[var(--border)]">
                       <div className="grid grid-cols-8 gap-0.5">
                         {QUICK_EMOJIS.map(e => (
-                          <button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--hover)] rounded-lg transition-colors">{e}</button>
+                          <button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--hover)] rounded-lg transition-all hover:scale-110 active:scale-90">{e}</button>
                         ))}
                       </div>
                     </div>
-                    <div className="max-h-48 overflow-y-auto p-2">
+                    <div className="max-h-52 overflow-y-auto p-2.5 scroll-thin">
                       {Object.entries(EMOJI_CATEGORIES).map(([cat, emojis]) => (
-                        <div key={cat} className="mb-2">
-                          <p className="text-xs text-[var(--text-muted)] mb-1 px-1">{cat}</p>
+                        <div key={cat} className="mb-3">
+                          <p className="text-[10px] font-bold text-[var(--text-muted)] mb-1.5 px-1 uppercase tracking-wider">{cat}</p>
                           <div className="grid grid-cols-8 gap-0.5">
-                            {emojis.map(e => (<button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--hover)] rounded transition-colors">{e}</button>))}
+                            {emojis.map(e => (<button key={e} onClick={() => handleEmojiSelect(e)} className="w-8 h-8 flex items-center justify-center text-lg hover:bg-[var(--hover)] rounded-lg transition-all hover:scale-110 active:scale-90">{e}</button>))}
                           </div>
                         </div>
                       ))}
@@ -732,43 +816,44 @@ export default function ChatArea() {
                   </div>
                 )}
               </div>
-              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
-              <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
-              <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,.7z,.tar,.gz" className="hidden" onChange={handleFileUpload} />
-              <input ref={audioInputRef} type="file" accept="audio/*" className="hidden" onChange={handleFileUpload} />
-              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileUpload} />
+              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} aria-label="Upload file" />
+              <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} aria-label="Upload image" />
+              <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,.7z,.tar,.gz" className="hidden" onChange={handleFileUpload} aria-label="Upload document" />
+              <input ref={audioInputRef} type="file" accept="audio/*" className="hidden" onChange={handleFileUpload} aria-label="Upload audio" />
+              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileUpload} aria-label="Take photo" />
               {/* Attachment menu */}
               <div className="relative">
-                <button onClick={() => { setShowAttachMenu(!showAttachMenu); setShowEmojiPicker(false); }} className="btn-icon">
-                  {isUploading ? <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /> : <Paperclip className={cn('w-5 h-5 transition-transform duration-200', showAttachMenu && 'rotate-[135deg] text-[var(--accent)]')} />}
+                <button onClick={() => { setShowAttachMenu(!showAttachMenu); setShowEmojiPicker(false); }}
+                  className={cn('btn-icon transition-all', showAttachMenu && 'text-[var(--accent)] bg-[var(--accent-subtle)]')} aria-label="Attach file" aria-expanded={showAttachMenu}>
+                  {isUploading ? <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /> : <Paperclip className={cn('w-5 h-5 transition-transform duration-300', showAttachMenu && 'rotate-[135deg] text-[var(--accent)]')} />}
                 </button>
                 {showAttachMenu && (
                   <>
                     <div className="fixed inset-0 z-20" onClick={() => setShowAttachMenu(false)} />
-                    <div className="absolute bottom-12 left-0 bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-lg z-30 p-3 w-[252px]">
-                      <div className="grid grid-cols-3 gap-1">
+                    <div className="absolute bottom-12 left-0 bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-2xl z-30 p-3 w-[260px] animate-scale-up" role="menu" aria-label="Attachment options">
+                      <div className="grid grid-cols-3 gap-1.5">
                         {[
-                          { Icon: ImageIcon, label: 'Gallery', color: 'bg-violet-500', onClick: () => { imageInputRef.current?.click(); setShowAttachMenu(false); } },
-                          { Icon: Camera, label: 'Camera', color: 'bg-pink-500', onClick: () => { cameraInputRef.current?.click(); setShowAttachMenu(false); } },
-                          { Icon: FileText, label: 'Document', color: 'bg-blue-500', onClick: () => { docInputRef.current?.click(); setShowAttachMenu(false); } },
-                          { Icon: Music, label: 'Audio', color: 'bg-orange-500', onClick: () => { audioInputRef.current?.click(); setShowAttachMenu(false); } },
-                          { Icon: MapPin, label: 'Location', color: 'bg-green-500', onClick: () => handleShareLocation() },
+                          { Icon: ImageIcon, label: 'Gallery', color: 'bg-gradient-to-br from-violet-500 to-purple-600', onClick: () => { imageInputRef.current?.click(); setShowAttachMenu(false); } },
+                          { Icon: Camera, label: 'Camera', color: 'bg-gradient-to-br from-pink-500 to-rose-600', onClick: () => { cameraInputRef.current?.click(); setShowAttachMenu(false); } },
+                          { Icon: FileText, label: 'Document', color: 'bg-gradient-to-br from-blue-500 to-indigo-600', onClick: () => { docInputRef.current?.click(); setShowAttachMenu(false); } },
+                          { Icon: Music, label: 'Audio', color: 'bg-gradient-to-br from-orange-500 to-amber-600', onClick: () => { audioInputRef.current?.click(); setShowAttachMenu(false); } },
+                          { Icon: MapPin, label: 'Location', color: 'bg-gradient-to-br from-green-500 to-emerald-600', onClick: () => handleShareLocation() },
                         ].map(({ Icon, label, color, onClick }) => (
                           <button key={label} onClick={onClick}
-                            className="flex flex-col items-center gap-1.5 py-2.5 px-1 rounded-xl hover:bg-[var(--hover)] transition-colors">
-                            <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm', color)}>
+                            className="flex flex-col items-center gap-2 py-3 px-1 rounded-xl hover:bg-[var(--hover)] transition-all active:scale-95">
+                            <div className={cn('w-11 h-11 rounded-2xl flex items-center justify-center text-white shadow-md', color)}>
                               <Icon className="w-5 h-5" />
                             </div>
-                            <span className="text-[10px] font-medium text-[var(--text-secondary)]">{label}</span>
+                            <span className="text-[10px] font-semibold text-[var(--text-secondary)]">{label}</span>
                           </button>
                         ))}
                         {conversation?.type === 'group' && (
                           <button onClick={() => { setShowPollModal(true); setShowAttachMenu(false); }}
-                            className="flex flex-col items-center gap-1.5 py-2.5 px-1 rounded-xl hover:bg-[var(--hover)] transition-colors">
-                            <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm bg-amber-500')}>
+                            className="flex flex-col items-center gap-2 py-3 px-1 rounded-xl hover:bg-[var(--hover)] transition-all active:scale-95">
+                            <div className="w-11 h-11 rounded-2xl flex items-center justify-center text-white shadow-md bg-gradient-to-br from-amber-500 to-yellow-600">
                               <BarChart3 className="w-5 h-5" />
                             </div>
-                            <span className="text-[10px] font-medium text-[var(--text-secondary)]">Poll</span>
+                            <span className="text-[10px] font-semibold text-[var(--text-secondary)]">Poll</span>
                           </button>
                         )}
                       </div>
@@ -776,22 +861,27 @@ export default function ChatArea() {
                   </>
                 )}
               </div>
-              <button onClick={() => setShowGifPanel(!showGifPanel)} className="btn-icon" title="GIF"><span className="text-xs font-bold">GIF</span></button>
+              <button onClick={() => setShowGifPanel(!showGifPanel)} className={cn('btn-icon transition-all', showGifPanel && 'text-[var(--accent)] bg-[var(--accent-subtle)]')} title="GIF" aria-label="GIF picker" aria-expanded={showGifPanel}>
+                <span className="text-[11px] font-black tracking-tight">GIF</span>
+              </button>
             </div>
             <div className="flex-1 min-w-0">
               <textarea ref={textareaRef} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown}
-                className="input-field resize-none !rounded-2xl !py-2.5 !border-[var(--border)]"
+                className="input-field resize-none !rounded-2xl !py-2.5 !px-4 !border-[var(--border)] !text-[14px] focus:!ring-2 focus:!ring-[var(--accent-ring)] focus:!border-[var(--accent)] transition-all"
                 placeholder="Type a message..." rows={1}
-                style={{ height: `${Math.min(Math.max(40, input.split('\n').length * 22 + 18), 120)}px` }} />
+                aria-label="Message"
+                style={{ height: `${Math.min(Math.max(42, input.split('\n').length * 22 + 20), 120)}px` }} />
             </div>
-            <div className="pb-0.5">
+            <div className="pb-1">
               {input.trim() ? (
                 <button onClick={handleSend} disabled={connectionStatus === 'error'}
-                  className="w-10 h-10 rounded-full bg-[var(--accent)] text-white flex items-center justify-center transition-all hover:bg-[var(--accent-hover)] active:scale-90 shadow-md">
+                  className="w-10 h-10 rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] text-white flex items-center justify-center transition-all hover:shadow-lg hover:shadow-[var(--accent)]/25 active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Send message">
                   <Send className="w-[18px] h-[18px] ml-0.5" />
                 </button>
               ) : (
-                <button onClick={() => setShowVoiceRecorder(true)} className="btn-icon" title="Record voice message"><Mic className="w-5 h-5" /></button>
+                <button onClick={() => setShowVoiceRecorder(true)} className="w-10 h-10 rounded-full flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all active:scale-90" title="Record voice message" aria-label="Record voice message">
+                  <Mic className="w-5 h-5" />
+                </button>
               )}
             </div>
           </div>
@@ -825,29 +915,36 @@ export default function ChatArea() {
           onViewPinned={() => { setShowPinnedOverlay(true); setBackgroundMenu(null); }} />
       )}
       {deleteConfirm && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50" onClick={() => setDeleteConfirm(null)}>
-          <div className="bg-[var(--bg-surface)] rounded-xl w-full max-w-sm p-5 shadow-lg border border-[var(--border)] mx-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-bold text-[var(--text-primary)] mb-2">{deleteConfirm.forEveryone ? 'Delete for everyone?' : 'Delete message?'}</h3>
-            <p className="text-sm text-[var(--text-muted)] mb-4">{deleteConfirm.forEveryone ? 'This message will be deleted for all participants.' : 'This message will only be deleted for you.'}</p>
-            <div className="flex items-center gap-2 justify-end">
-              <button onClick={() => setDeleteConfirm(null)} className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] rounded-lg hover:bg-[var(--hover)]">Cancel</button>
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setDeleteConfirm(null)} role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+          <div className="bg-[var(--bg-surface)] rounded-2xl w-full max-w-sm p-6 shadow-2xl border border-[var(--border)] mx-4 animate-scale-up" onClick={e => e.stopPropagation()}>
+            <div className="w-12 h-12 rounded-2xl bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="w-6 h-6 text-[var(--danger)]" />
+            </div>
+            <h3 id="delete-dialog-title" className="text-lg font-bold text-[var(--text-primary)] mb-2 text-center">{deleteConfirm.forEveryone ? 'Delete for everyone?' : 'Delete message?'}</h3>
+            <p className="text-sm text-[var(--text-muted)] mb-6 text-center leading-relaxed">{deleteConfirm.forEveryone ? 'This message will be permanently deleted for all participants.' : 'This message will only be deleted for you.'}</p>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setDeleteConfirm(null)} className="flex-1 px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] rounded-xl border border-[var(--border)] hover:bg-[var(--hover)] transition-all active:scale-[0.98]">Cancel</button>
               <button onClick={() => handleDeleteMessage(deleteConfirm.messageId, deleteConfirm.forEveryone)}
-                className="px-4 py-2 text-sm font-semibold text-white bg-[var(--danger)] rounded-lg hover:brightness-110 active:scale-[0.98]">Delete</button>
+                className="flex-1 px-4 py-2.5 text-sm font-bold text-white bg-[var(--danger)] rounded-xl hover:brightness-110 active:scale-[0.98] transition-all shadow-md">Delete</button>
             </div>
           </div>
         </div>
       )}
       {imagePreview && (
-        <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4" onClick={() => setImagePreview(null)}>
-          <div className="absolute top-6 right-6 flex items-center gap-2 z-10">
+        <div className="fixed inset-0 z-[60] bg-black/95 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in" onClick={() => setImagePreview(null)} role="dialog" aria-modal="true" aria-label="Image preview">
+          <div className="absolute top-6 right-6 flex items-center gap-3 z-10">
             <a href={imagePreview.url} download={imagePreview.name} onClick={e => e.stopPropagation()}
-              className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all" title="Download"><Download className="w-5 h-5" /></a>
-            <button onClick={() => setImagePreview(null)} className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all"><X className="w-5 h-5" /></button>
+              className="p-3 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm active:scale-95" title="Download" aria-label="Download image">
+              <Download className="w-5 h-5" />
+            </a>
+            <button onClick={() => setImagePreview(null)} className="p-3 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm active:scale-95" aria-label="Close preview">
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <div className="max-w-4xl max-h-[85vh]">
+          <div className="max-w-4xl max-h-[85vh] animate-scale-up">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={imagePreview.url} alt={imagePreview.name || 'Image'} className="max-w-full max-h-[85vh] object-contain rounded-xl" />
-            <p className="text-center text-white/50 text-sm mt-3">{imagePreview.name}</p>
+            <img src={imagePreview.url} alt={imagePreview.name || 'Image'} className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl" />
+            <p className="text-center text-white/40 text-sm mt-4 font-medium">{imagePreview.name}</p>
           </div>
         </div>
       )}
@@ -861,24 +958,31 @@ export default function ChatArea() {
       <EditMessageModal isOpen={!!editingMessage} originalContent={editingMessage?.content || editingMessage?.encrypted_content || ''} onClose={() => setEditingMessage(null)} onSave={handleEditMessage} />
       {messageInfoTarget && <MessageInfoModal isOpen={!!messageInfoTarget} message={messageInfoTarget} onClose={() => setMessageInfoTarget(null)} />}
       {showPinnedOverlay && currentPinnedMessages.length > 0 && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50" onClick={() => setShowPinnedOverlay(false)}>
-          <div className="bg-[var(--bg-surface)] rounded-xl w-full max-w-md max-h-[70vh] flex flex-col shadow-lg border border-[var(--border)] overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="px-5 py-3 border-b border-[var(--border)] flex items-center justify-between flex-shrink-0">
-              <div className="flex items-center gap-2">
-                <Pin className="w-4 h-4 text-[var(--accent)]" />
-                <h3 className="text-sm font-bold text-[var(--text-primary)]">Pinned Messages</h3>
-                <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-wash)] px-2 py-0.5 rounded-full">{currentPinnedMessages.length}</span>
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setShowPinnedOverlay(false)} role="dialog" aria-modal="true" aria-labelledby="pinned-dialog-title">
+          <div className="bg-[var(--bg-surface)] rounded-2xl w-full max-w-md max-h-[70vh] flex flex-col shadow-2xl border border-[var(--border)] overflow-hidden animate-scale-up" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-[var(--border)] flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[var(--accent-subtle)] flex items-center justify-center">
+                  <Pin className="w-4 h-4 text-[var(--accent)]" />
+                </div>
+                <div>
+                  <h3 id="pinned-dialog-title" className="text-sm font-bold text-[var(--text-primary)]">Pinned Messages</h3>
+                  <p className="text-[11px] text-[var(--text-muted)]">{currentPinnedMessages.length} message{currentPinnedMessages.length > 1 ? 's' : ''}</p>
+                </div>
               </div>
-              <button onClick={() => setShowPinnedOverlay(false)} className="p-1 rounded-full hover:bg-[var(--hover)]"><X className="w-4 h-4 text-[var(--text-muted)]" /></button>
+              <button onClick={() => setShowPinnedOverlay(false)} className="p-2 rounded-xl hover:bg-[var(--hover)] transition-colors" aria-label="Close pinned messages">
+                <X className="w-4 h-4 text-[var(--text-muted)]" />
+              </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5 scroll-thin">
               {currentPinnedMessages.map(msg => (
-                <div key={msg.id} className="bg-[var(--bg-wash)] rounded-lg p-3 border border-[var(--border)]">
-                  <p className="text-xs text-[var(--accent)] font-medium mb-1">{msg.sender_display_name || msg.sender_username || 'You'}</p>
-                  <p className="text-sm text-[var(--text-primary)] line-clamp-3">{msg.content || '🔒 Encrypted'}</p>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px] text-[var(--text-muted)]">{formatMessageTime(msg.created_at)}</span>
-                    <button onClick={() => { if (activeConversation) togglePinMessage(activeConversation, msg.id); }} className="text-xs text-[var(--danger)] hover:underline">Unpin</button>
+                <div key={msg.id} className="bg-[var(--bg-wash)] rounded-xl p-3.5 border border-[var(--border)] hover:border-[var(--accent)]/30 transition-colors group">
+                  <p className="text-xs text-[var(--accent)] font-bold mb-1">{msg.sender_display_name || msg.sender_username || 'You'}</p>
+                  <p className="text-sm text-[var(--text-primary)] line-clamp-3 leading-relaxed">{msg.content || '🔒 Encrypted'}</p>
+                  <div className="flex items-center justify-between mt-3">
+                    <span className="text-[10px] text-[var(--text-muted)] font-medium">{formatMessageTime(msg.created_at)}</span>
+                    <button onClick={() => { if (activeConversation) togglePinMessage(activeConversation, msg.id); }}
+                      className="text-xs text-[var(--danger)] hover:text-red-400 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">Unpin</button>
                   </div>
                 </div>
               ))}
@@ -908,7 +1012,7 @@ function AudioPlayerBubble({ fileData, isOwn }: { fileData: FileData & { duratio
     let cancelled = false;
     getAuthBlobUrl(`/files/${fileData.file_id}/download`)
       .then(url => { if (!cancelled) setSrc(url); })
-      .catch(() => {});
+      .catch(() => { });
     return () => { cancelled = true; };
   }, [fileData.file_id]);
 
@@ -934,7 +1038,7 @@ function AudioPlayerBubble({ fileData, isOwn }: { fileData: FileData & { duratio
           onLoadedMetadata={() => { if (audioRef.current && audioRef.current.duration !== Infinity) setDur(audioRef.current.duration); }}
           onEnded={() => { setPlaying(false); setProgress(0); setCurTime(0); }} />
       )}
-      <button onClick={toggle} disabled={!src}
+      <button onClick={toggle} disabled={!src} aria-label={playing ? 'Pause audio' : 'Play audio'}
         className={cn('w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 transition-all active:scale-90',
           isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]')}>
         {!src ? <Loader2 className="w-4 h-4 animate-spin" /> : playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
@@ -1027,9 +1131,9 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
   };
 
   const ReplyPreview = () => repliedMessage ? (
-    <div className={cn('mb-1.5 border-l-2 pl-2 py-0.5 rounded-sm text-xs', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
-      <p className={cn('font-medium text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
-      <p className={cn('truncate text-[11px]', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{repliedMessage.content && !isValidEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted'}</p>
+    <div className={cn('mb-2 border-l-[3px] pl-2.5 py-1 rounded-r-md text-xs cursor-pointer hover:opacity-80 transition-opacity', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
+      <p className={cn('font-bold text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
+      <p className={cn('truncate text-[11px] mt-0.5', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{repliedMessage.content && !isValidEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted'}</p>
     </div>
   ) : null;
 
@@ -1044,20 +1148,23 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
   );
 
   return (
-    <div className={cn('flex group', isOwn ? 'justify-end' : 'justify-start', showName ? 'mt-3' : 'mt-0.5',
+    <div className={cn('flex group/msg', isOwn ? 'justify-end' : 'justify-start', showName ? 'mt-3' : 'mt-0.5',
       selectionMode && 'cursor-pointer',
-      isSelected && 'bg-[var(--accent-subtle)] rounded-lg -mx-2 px-2 py-0.5',
-      isHighlighted && 'bg-[var(--accent-subtle)] rounded-lg -mx-2 px-2 py-1 transition-all duration-1000',
+      isSelected && 'bg-[var(--accent-subtle)]/50 rounded-xl -mx-2 px-2 py-0.5',
+      isHighlighted && 'bg-[var(--accent-subtle)]/60 rounded-xl -mx-2 px-2 py-1 transition-all duration-1000',
     )}
       onContextMenu={selectionMode ? undefined : onContextMenu}
       onMouseEnter={() => setShowActions(true)} onMouseLeave={() => setShowActions(false)}
       onDoubleClick={selectionMode ? undefined : onReply}
-      onClick={selectionMode ? onToggleSelect : undefined}>
+      onClick={selectionMode ? onToggleSelect : undefined}
+      role={selectionMode ? 'checkbox' : undefined}
+      aria-checked={selectionMode ? isSelected : undefined}
+      tabIndex={selectionMode ? 0 : undefined}>
 
       {selectionMode && (
-        <div className={cn('flex items-center mr-2 flex-shrink-0', isOwn && 'order-last ml-2 mr-0')}>
-          <div className={cn('w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all',
-            isSelected ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--text-muted)] bg-transparent')}>
+        <div className={cn('flex items-center mr-3 flex-shrink-0', isOwn && 'order-last ml-3 mr-0')}>
+          <div className={cn('w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all duration-200',
+            isSelected ? 'bg-[var(--accent)] border-[var(--accent)] scale-110' : 'border-[var(--text-muted)]/50 bg-transparent hover:border-[var(--accent)]')}>
             {isSelected && <Check className="w-3 h-3 text-white" />}
           </div>
         </div>
@@ -1065,18 +1172,22 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
 
       <div className="max-w-[70%] lg:max-w-[55%] relative">
         {showActions && !isFailed && !selectionMode && (
-          <div className={cn('absolute -top-7 z-10 flex items-center gap-0.5', isOwn ? 'right-0' : 'left-0')}>
-            <button onClick={onReply} className="p-1.5 bg-[var(--bg-surface)] border border-[var(--border)] rounded-full shadow-sm text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors" title="Reply"><Reply className="w-3 h-3" /></button>
-            <button onClick={(e) => { e.stopPropagation(); onContextMenu(e); }} className="p-1.5 bg-[var(--bg-surface)] border border-[var(--border)] rounded-full shadow-sm text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors" title="More"><MoreHorizontal className="w-3 h-3" /></button>
+          <div className={cn('absolute -top-8 z-10 flex items-center gap-1 opacity-0 group-hover/msg:opacity-100 transition-all duration-200', isOwn ? 'right-0' : 'left-0')}>
+            <button onClick={onReply} className="p-1.5 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg shadow-md text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)]/30 transition-all active:scale-90" title="Reply" aria-label="Reply">
+              <Reply className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onContextMenu(e); }} className="p-1.5 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg shadow-md text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)]/30 transition-all active:scale-90" title="More" aria-label="More actions">
+              <MoreHorizontal className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
 
         {/* Image message */}
         {isImage && fileData ? (
-          <div className={cn('rounded-2xl overflow-hidden', isOwn ? 'rounded-br-sm' : 'rounded-bl-sm', isFailed && 'opacity-80', isPending && 'opacity-60')}>
+          <div className={cn('rounded-2xl overflow-hidden shadow-sm', isOwn ? 'rounded-br-md' : 'rounded-bl-md', isFailed && 'opacity-80', isPending && 'opacity-60')}>
             {!isOwn && showName && message.sender_username && (
-              <div className={cn('px-3 pt-2 pb-1', isOwn ? 'bubble-own' : 'bubble-other')}>
-                <p className="text-xs font-semibold text-[var(--accent)]">{message.sender_display_name || message.sender_username}</p>
+              <div className={cn('px-3 pt-2.5 pb-1', isOwn ? 'bubble-own' : 'bubble-other')}>
+                <p className="text-xs font-bold text-[var(--accent)]">{message.sender_display_name || message.sender_username}</p>
               </div>
             )}
             {repliedMessage && <div className={cn('px-3 pt-2', isOwn ? 'bubble-own' : 'bubble-other')}><ReplyPreview /></div>}
@@ -1093,9 +1204,9 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
 
         ) : isAudioMessage && fileData ? (
           /* Audio message */
-          <div className={cn('rounded-2xl text-sm overflow-hidden', isOwn ? 'rounded-br-sm bubble-own' : 'rounded-bl-sm bubble-other', isPending && 'opacity-60')}>
+          <div className={cn('rounded-2xl text-sm overflow-hidden shadow-sm', isOwn ? 'rounded-br-md bubble-own' : 'rounded-bl-md bubble-other', isPending && 'opacity-60')}>
             {!isOwn && showName && message.sender_username && (
-              <p className="text-xs font-semibold text-[var(--accent)] px-3.5 pt-2.5 mb-0.5">{message.sender_display_name || message.sender_username}</p>
+              <p className="text-xs font-bold text-[var(--accent)] px-3.5 pt-2.5 mb-0.5">{message.sender_display_name || message.sender_username}</p>
             )}
             {repliedMessage && <div className="mx-3.5 mt-2 mb-1"><ReplyPreview /></div>}
             <div className="px-3.5 py-2.5">
@@ -1106,25 +1217,27 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
 
         ) : isFileMessage && fileData ? (
           /* File message */
-          <div className={cn('rounded-2xl text-sm overflow-hidden', isOwn ? 'rounded-br-sm bubble-own' : 'rounded-bl-sm bubble-other', isFailed && '!bg-red-600 text-white opacity-80', isPending && 'opacity-60')}>
+          <div className={cn('rounded-2xl text-sm overflow-hidden shadow-sm', isOwn ? 'rounded-br-md bubble-own' : 'rounded-bl-md bubble-other', isFailed && '!bg-red-600 text-white opacity-80', isPending && 'opacity-60')}>
             {!isOwn && showName && message.sender_username && (
-              <p className="text-xs font-semibold text-[var(--accent)] px-3.5 pt-2.5 mb-0.5">{message.sender_display_name || message.sender_username}</p>
+              <p className="text-xs font-bold text-[var(--accent)] px-3.5 pt-2.5 mb-0.5">{message.sender_display_name || message.sender_username}</p>
             )}
             {repliedMessage && <div className="mx-3.5 mt-2 mb-1"><ReplyPreview /></div>}
             <div className="px-3 py-2.5">
               {(() => {
                 const info = getFileTypeInfo(fileData.mime_type, fileData.filename);
                 return (
-                  <div className={cn('flex items-center gap-3 p-2.5 rounded-xl', isOwn ? 'bg-white/10' : 'bg-[var(--bg-wash)]')}>
-                    <div className={cn('w-11 h-11 rounded-xl flex items-center justify-center text-white text-lg flex-shrink-0', info.color)}><span>{info.icon}</span></div>
-                    <div className="flex-1 min-w-0">
-                      <p className={cn('text-sm font-medium truncate', isOwn ? 'text-white' : 'text-[var(--text-primary)]')}>{fileData.filename || 'File'}</p>
-                      <p className={cn('text-xs mt-0.5', isOwn ? 'text-white/60' : 'text-[var(--text-muted)]')}>{info.label}{fileData.file_size ? ` · ${formatSize(fileData.file_size)}` : ''}</p>
+                  <div className={cn('flex items-center gap-3 p-3 rounded-xl', isOwn ? 'bg-white/10' : 'bg-[var(--bg-wash)]')}>
+                    <div className={cn('w-12 h-12 rounded-xl flex items-center justify-center text-white text-lg flex-shrink-0 shadow-sm', info.color)}>
+                      <span>{info.icon}</span>
                     </div>
-                    <button onClick={(e) => { e.stopPropagation(); onDownload(fileData!); }}
-                      className={cn('w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-all active:scale-90',
-                        isOwn ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-[var(--accent-subtle)] hover:bg-[var(--accent-muted)] text-[var(--accent)]')}>
-                      <Download className="w-4 h-4" />
+                    <div className="flex-1 min-w-0">
+                      <p className={cn('text-sm font-semibold truncate', isOwn ? 'text-white' : 'text-[var(--text-primary)]')}>{fileData.filename || 'File'}</p>
+                      <p className={cn('text-xs mt-0.5', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{info.label}{fileData.file_size ? ` · ${formatSize(fileData.file_size)}` : ''}</p>
+                    </div>
+                    <button onClick={(e) => { e.stopPropagation(); onDownload(fileData!); }} aria-label="Download file"
+                      className={cn('w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90',
+                        isOwn ? 'bg-white/15 hover:bg-white/25 text-white' : 'bg-[var(--accent-subtle)] hover:bg-[var(--accent-muted)] text-[var(--accent)]')}>
+                      <Download className="w-4.5 h-4.5" />
                     </button>
                   </div>
                 );
@@ -1135,42 +1248,42 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
 
         ) : (
           /* Text message */
-          <div className={cn('px-3.5 py-2 rounded-2xl text-sm', isOwn ? 'rounded-br-sm bubble-own' : 'rounded-bl-sm bubble-other', isFailed && '!bg-red-600 text-white opacity-80', isPending && 'opacity-60')}>
+          <div className={cn('px-3.5 py-2.5 rounded-2xl text-sm shadow-sm', isOwn ? 'rounded-br-md bubble-own' : 'rounded-bl-md bubble-other', isFailed && '!bg-red-600 text-white opacity-80', isPending && 'opacity-60')}>
             {!isOwn && showName && message.sender_username && (
-              <p className="text-xs font-semibold text-[var(--accent)] mb-0.5">{message.sender_display_name || message.sender_username}</p>
+              <p className="text-xs font-bold text-[var(--accent)] mb-1">{message.sender_display_name || message.sender_username}</p>
             )}
             <ReplyPreview />
             <div className="leading-relaxed whitespace-pre-wrap break-words">
               {message.content && !isValidEncryptedMessage(message.content)
                 ? (() => {
-                    try {
-                      const parsed = JSON.parse(message.content.trim());
-                      if (parsed.type === 'location' && parsed.lat != null && parsed.lng != null) {
-                        return <LocationBubble lat={parsed.lat} lng={parsed.lng} isOwn={isOwn} />;
-                      }
-                      if (parsed.type === 'gif' && parsed.url) {
-                        return (
-                          <div className="rounded-lg overflow-hidden max-w-[280px]">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={parsed.previewUrl || parsed.url} alt={parsed.title || 'GIF'} className="w-full rounded-lg" loading="lazy" />
-                            <span className="text-[9px] opacity-40 mt-0.5 block">via GIPHY</span>
-                          </div>
-                        );
-                      }
-                      if (parsed.type === 'poll' && parsed.pollId) {
-                        return <PollBubble pollId={parsed.pollId} isOwn={isOwn} />;
-                      }
-                      // If JSON is valid but not a special type, fall through to regular text processing
-                    } catch (error) { 
-                      console.log('JSON parse failed for message:', message.content, error);
-                      // Not valid JSON, fall through to regular text processing
+                  try {
+                    const parsed = JSON.parse(message.content.trim());
+                    if (parsed.type === 'location' && parsed.lat != null && parsed.lng != null) {
+                      return <LocationBubble lat={parsed.lat} lng={parsed.lng} isOwn={isOwn} />;
                     }
-                    // Regular text processing for mentions
-                    const mentionRegex = /@(\w+)/g;
-                    const parts = message.content.split(mentionRegex);
-                    if (parts.length > 1) return parts.map((part: string, i: number) => i % 2 === 1 ? <span key={i} className="text-[var(--accent)] font-semibold">@{part}</span> : <span key={i}>{part}</span>);
-                    return message.content;
-                  })()
+                    if (parsed.type === 'gif' && parsed.url) {
+                      return (
+                        <div className="rounded-lg overflow-hidden max-w-[280px]">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={parsed.previewUrl || parsed.url} alt={parsed.title || 'GIF'} className="w-full rounded-lg" loading="lazy" />
+                          <span className="text-[9px] opacity-40 mt-0.5 block">via GIPHY</span>
+                        </div>
+                      );
+                    }
+                    if (parsed.type === 'poll' && parsed.pollId) {
+                      return <PollBubble pollId={parsed.pollId} isOwn={isOwn} />;
+                    }
+                    // If JSON is valid but not a special type, fall through to regular text processing
+                  } catch (error) {
+                    console.log('JSON parse failed for message:', message.content, error);
+                    // Not valid JSON, fall through to regular text processing
+                  }
+                  // Regular text processing for mentions
+                  const mentionRegex = /@(\w+)/g;
+                  const parts = message.content.split(mentionRegex);
+                  if (parts.length > 1) return parts.map((part: string, i: number) => i % 2 === 1 ? <span key={i} className="text-[var(--accent)] font-semibold">@{part}</span> : <span key={i}>{part}</span>);
+                  return message.content;
+                })()
                 : <span className="italic opacity-70 flex items-center gap-1"><Lock className="w-3 h-3 inline" /> Encrypted message</span>}
             </div>
             <StatusFooter className="mt-0.5" />

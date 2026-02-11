@@ -40,11 +40,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const user = JSON.parse(userStr);
         set({ user, isAuthenticated: true, isLoading: false });
 
-        // Initialize E2EE crypto layer
+        // Initialize E2EE crypto layer (no password available on hydration).
+        // If localStorage keys exist, this restores them silently.
+        // If localStorage keys are missing, initialize will skip backup
+        // restore (no password) and skip key generation — the user must
+        // re-login to trigger full key restoration from server backup.
         if (user.id) {
-          useCryptoStore.getState().initialize(user.id).catch(err => {
-            logger.error('[E2EE] Page hydration initialization failed:', err);
-          });
+          const hasLocalKeys = !!localStorage.getItem(`zynk_pub_${user.id}`) &&
+                               !!localStorage.getItem(`zynk_priv_${user.id}`);
+          if (hasLocalKeys) {
+            useCryptoStore.getState().initialize(user.id).catch(err => {
+              logger.error('[E2EE] Page hydration initialization failed:', err);
+            });
+          } else {
+            // Keys were cleared — force re-login to restore from backup
+            logger.warn('[E2EE] Local keys missing on hydrate — user must re-login for key restore');
+          }
         }
       } catch {
         set({ isLoading: false });
@@ -66,9 +77,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem('user', JSON.stringify(user));
     set({ user, isAuthenticated: true });
 
-    // Initialize E2EE
+    // Initialize E2EE with password — enables key backup restore on new devices
     try {
-      await useCryptoStore.getState().initialize(user_id);
+      await useCryptoStore.getState().initialize(user_id, password);
     } catch (error) {
       logger.error('[E2EE] Initialization failed:', error);
     }
@@ -90,9 +101,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem('user', JSON.stringify(user));
     set({ user, isAuthenticated: true });
 
-    // Initialize E2EE
+    // Initialize E2EE with password — enables key backup restore on new devices
     try {
-      await useCryptoStore.getState().initialize(user_id);
+      await useCryptoStore.getState().initialize(user_id, password);
     } catch (error) {
       logger.error('[E2EE] Initialization failed:', error);
     }
@@ -108,9 +119,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem('user', JSON.stringify(user));
     set({ user, isAuthenticated: true });
 
-    // Generate and upload E2EE keys on first registration
+    // Generate and upload E2EE keys + create backup on registration
     try {
-      await useCryptoStore.getState().initialize(user_id);
+      await useCryptoStore.getState().initialize(user_id, password);
     } catch (error) {
       logger.error('[E2EE] Key generation failed:', error);
     }

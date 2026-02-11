@@ -58,6 +58,15 @@ export const SOCKET_EVENTS = {
   GROUP_KEY_ROTATION_NEEDED: 'group:key-rotation-needed',
   GROUP_REQUEST_KEY_ROTATION: 'group:request-key-rotation',
 
+  // Key Backup & Device Sync
+  KEY_BACKUP_UPDATED: 'key:backup-updated',
+  KEY_BACKUP_CHANGED: 'key:backup-changed',
+  KEY_EPOCH_ROTATED: 'key:epoch-rotated',
+  KEY_EPOCH_CHANGED: 'key:epoch-changed',
+  KEY_PEER_EPOCH_CHANGED: 'key:peer-epoch-changed',
+  KEY_REQUEST_SYNC: 'key:request-sync',
+  KEY_SYNC_REQUESTED: 'key:sync-requested',
+
   // Heartbeat
   PING: 'ping',
   PONG: 'pong',

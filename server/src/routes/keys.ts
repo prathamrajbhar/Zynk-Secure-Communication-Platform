@@ -12,6 +12,7 @@ import { z } from 'zod';
 import prisma from '../db/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { logger } from '../lib/logger';
 
 const router = Router();
 
