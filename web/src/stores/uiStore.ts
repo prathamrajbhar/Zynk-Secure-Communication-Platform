@@ -40,7 +40,7 @@ interface UIState {
   showGroupCreate: boolean;
   showProfile: boolean;
   showUserInfo: boolean;
-  settingsTab: 'appearance' | 'notifications' | 'privacy' | 'security' | 'devices' | 'storage' | 'about';
+  settingsTab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'about';
 
   // New feature state
   chatBackground: ChatBackground;
@@ -63,7 +63,7 @@ interface UIState {
   setShowGroupCreate: (show: boolean) => void;
   setShowProfile: (show: boolean) => void;
   setShowUserInfo: (show: boolean) => void;
-  setSettingsTab: (tab: 'appearance' | 'notifications' | 'privacy' | 'security' | 'devices' | 'storage' | 'about') => void;
+  setSettingsTab: (tab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'about') => void;
   setChatBackground: (bg: ChatBackground) => void;
   setSidebarFilter: (filter: SidebarFilter) => void;
   setMessageSoundEnabled: (enabled: boolean) => void;

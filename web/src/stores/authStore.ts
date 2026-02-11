@@ -125,7 +125,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.removeItem('session_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');
-    localStorage.removeItem('user_id'); // Just in case it was set anywhere else
     set({ user: null, isAuthenticated: false });
   },
 

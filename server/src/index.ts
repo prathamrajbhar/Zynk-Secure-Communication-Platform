@@ -12,7 +12,6 @@ import prisma from './db/client';
 import { connectRedis } from './db/redis';
 import { errorHandler, notFound } from './middleware/error';
 import { setupWebSocket } from './websocket';
-import { startDisappearingMessageCleanup } from './services/disappearingMessages';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -24,13 +23,6 @@ import fileRoutes from './routes/files';
 import keyRoutes from './routes/keys';
 import reportRoutes from './routes/reports';
 import pollRoutes from './routes/polls';
-import sessionsRoutes from './routes/sessions';
-import aiRoutes from './routes/ai';
-import monitoringRoutes from './routes/monitoring';
-
-// Import security middleware
-import { sanitizeInput } from './middleware/security';
-import { metricsMiddleware } from './monitoring/metrics';
 
 const app = express();
 const server = http.createServer(app);
@@ -123,12 +115,6 @@ app.use(express.json({ limit: config.express.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: config.express.bodyLimit }));
 app.use(cookieParser());
 
-// Metrics middleware (track all requests)
-app.use(metricsMiddleware);
-
-// Sanitize all input to prevent injection attacks
-app.use(sanitizeInput);
-
 // Debug Request Logger (Development only - SECURITY: never log bodies in production)
 if (config.nodeEnv !== 'production') {
   app.use((req, res, next) => {
@@ -185,12 +171,9 @@ app.use('/api/v1/messages', messageRoutes);
 app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1/calls', callRoutes);
 app.use('/api/v1/files', fileRoutes);
-app.use('/api/v1/ai', aiRoutes);
 app.use('/api/v1/keys', keyRoutes);
-app.use('/api/v1/sessions', sessionsRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/polls', pollRoutes);
-app.use('/api/monitoring', monitoringRoutes);
 
 // Health check (no sensitive info)
 app.get('/api/health', (req, res) => {
@@ -218,9 +201,6 @@ async function start() {
     } catch (error) {
       console.warn('Redis connection failed (continuing without Redis):', (error as Error).message);
     }
-
-    // Start disappearing message cleanup job
-    startDisappearingMessageCleanup();
 
     server.listen(config.port, () => {
       console.log(`
