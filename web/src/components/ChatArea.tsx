@@ -6,6 +6,7 @@ import { useChatStore, Message } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useUIStore } from '@/stores/uiStore';
+import { useDisappearingMessageStore } from '@/stores/disappearingMessageStore';
 import { formatMessageTime, getInitials, cn, getAvatarColor } from '@/lib/utils';
 import {
   Send, Paperclip, Phone, Video, Lock, Shield,
@@ -20,6 +21,10 @@ import { isValidEncryptedMessage } from '@/lib/crypto';
 import api from '@/lib/api';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import dynamic from 'next/dynamic';
+import DisappearingMessageTimer from './DisappearingMessageTimer';
+import DisappearingMessageBadge from './DisappearingMessageBadge';
+import ForwardSecrecyBadge from './ForwardSecrecyBadge';
 import GroupInfoPanel from './GroupInfoPanel';
 import SafetyNumberModal from './SafetyNumberModal';
 import MessageContextMenu from './MessageContextMenu';
@@ -152,6 +157,8 @@ export default function ChatArea() {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
+  const [disappearingTimer, setDisappearingTimer] = useState<number | null>(null);
+  const { getTimer, setTimer: setStoreTimer, handleMessageExpiry } = useDisappearingMessageStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -173,6 +180,14 @@ export default function ChatArea() {
   const lastMessageId = conversationMessagesLength > 0 ? conversationMessages[conversationMessagesLength - 1].id : null;
   const typing = activeConversation ? (typingUsers[activeConversation] || []) : [];
   const [groupMembers, setGroupMembers] = useState<{ id: string; username: string; display_name?: string }[]>([]);
+
+  // Load disappearing timer for active conversation
+  useEffect(() => {
+    if (activeConversation) {
+      const timer = getTimer(activeConversation);
+      setDisappearingTimer(timer);
+    }
+  }, [activeConversation, getTimer]);
 
   // Fetch group members for @mention
   useEffect(() => {
@@ -262,7 +277,7 @@ export default function ChatArea() {
 
   const handleSend = () => {
     if (!input.trim() || !activeConversation) return;
-    sendMessageOptimistic(activeConversation, input.trim(), 'text', replyTo?.id);
+    sendMessageOptimistic(activeConversation, input.trim(), 'text', replyTo?.id, disappearingTimer);
     setInput(''); setReplyTo(null); setDraft(activeConversation, '');
     sendTyping(activeConversation, false);
   };
@@ -296,7 +311,8 @@ export default function ChatArea() {
       });
       const messageType = file.type.startsWith('image/') ? 'image' : file.type.startsWith('audio/') ? 'audio' : 'file';
       const content = JSON.stringify({ file_id: res.data.file_id, filename: res.data.filename, file_size: res.data.file_size, mime_type: res.data.mime_type, thumbnail_path: res.data.thumbnail_path || null });
-      sendMessageOptimistic(activeConversation, content, messageType);
+      const timer = useDisappearingMessageStore.getState().getTimer(activeConversation);
+      sendMessageOptimistic(activeConversation, content, messageType, undefined, timer);
       toast.success('File uploaded');
     } catch (err: unknown) {
       toast.error((axios.isAxiosError(err) && (err.response?.data as { error?: string } | undefined)?.error) || 'Failed to upload file');
@@ -390,7 +406,8 @@ export default function ChatArea() {
       formData.append('file', audioBlob, `voice-${Date.now()}.webm`);
       formData.append('conversation_id', activeConversation);
       const res = await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60000 });
-      sendMessageOptimistic(activeConversation, JSON.stringify({ file_id: res.data.file_id, filename: res.data.filename || 'voice-message.webm', file_size: res.data.file_size, mime_type: 'audio/webm', ...(duration != null && { duration }) }), 'audio');
+      const timer = useDisappearingMessageStore.getState().getTimer(activeConversation);
+      sendMessageOptimistic(activeConversation, JSON.stringify({ file_id: res.data.file_id, filename: res.data.filename || 'voice-message.webm', file_size: res.data.file_size, mime_type: 'audio/webm', ...(duration != null && { duration }) }), 'audio', undefined, timer);
       toast.success('Voice message sent');
     } catch { toast.error('Failed to send voice message'); }
     finally { setIsUploading(false); setShowVoiceRecorder(false); }
@@ -398,7 +415,8 @@ export default function ChatArea() {
 
   const handleGifSelect = (gif: { url: string; previewUrl: string; title: string; width: number; height: number }) => {
     if (!activeConversation) return;
-    sendMessageOptimistic(activeConversation, JSON.stringify({ type: 'gif', url: gif.url, previewUrl: gif.previewUrl, title: gif.title, width: gif.width, height: gif.height }), 'text');
+    const timer = useDisappearingMessageStore.getState().getTimer(activeConversation);
+    sendMessageOptimistic(activeConversation, JSON.stringify({ type: 'gif', url: gif.url, previewUrl: gif.previewUrl, title: gif.title, width: gif.width, height: gif.height }), 'text', undefined, timer);
     setShowGifPanel(false); toast.success('GIF sent');
   };
 
@@ -411,7 +429,8 @@ export default function ChatArea() {
       (pos) => {
         toast.dismiss(toastId);
         const content = JSON.stringify({ type: 'location', lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) });
-        sendMessageOptimistic(activeConversation!, content, 'text');
+        const timer = useDisappearingMessageStore.getState().getTimer(activeConversation!);
+        sendMessageOptimistic(activeConversation!, content, 'text', undefined, timer);
         toast.success('Location shared');
       },
       (err) => { toast.dismiss(toastId); toast.error(err.code === 1 ? 'Location access denied' : 'Could not get location'); },
@@ -642,7 +661,8 @@ export default function ChatArea() {
                     allMessages={conversationMessages} onRetry={retryMessage}
                     isStarred={starredMessages.has(msg.id)} isPinned={currentPinnedMessageIds.includes(msg.id)}
                     selectionMode={selectionMode} isSelected={selectedMessages.has(msg.id)}
-                    onToggleSelect={() => handleToggleSelect(msg.id)} isHighlighted={highlightMessageId === msg.id} />
+                    onToggleSelect={() => handleToggleSelect(msg.id)} isHighlighted={highlightMessageId === msg.id}
+                    activeConversation={activeConversation || undefined} onMessageExpiry={handleMessageExpiry} />
                 </div>
               );
             })}
@@ -777,6 +797,17 @@ export default function ChatArea() {
                 )}
               </div>
               <button onClick={() => setShowGifPanel(!showGifPanel)} className="btn-icon" title="GIF"><span className="text-xs font-bold">GIF</span></button>
+              {activeConversation && (
+                <DisappearingMessageTimer
+                  conversationId={activeConversation}
+                  currentTimer={disappearingTimer}
+                  onTimerSet={(seconds) => {
+                    setDisappearingTimer(seconds);
+                    setStoreTimer(activeConversation, seconds);
+                    toast.success(seconds ? `Messages will disappear after ${seconds < 60 ? seconds + 's' : seconds < 3600 ? (seconds / 60) + 'm' : (seconds / 3600) + 'h'}` : 'Disappearing messages off');
+                  }}
+                />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <textarea ref={textareaRef} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown}
@@ -908,7 +939,7 @@ function AudioPlayerBubble({ fileData, isOwn }: { fileData: FileData & { duratio
     let cancelled = false;
     getAuthBlobUrl(`/files/${fileData.file_id}/download`)
       .then(url => { if (!cancelled) setSrc(url); })
-      .catch(() => {});
+      .catch(() => { });
     return () => { cancelled = true; };
   }, [fileData.file_id]);
 
@@ -988,7 +1019,7 @@ function LocationBubble({ lat, lng, isOwn }: { lat: number; lng: number; isOwn: 
 }
 
 /* ── Message Bubble ── */
-function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPreview, onDownload, allMessages, onRetry, isStarred, isPinned, selectionMode, isSelected, onToggleSelect, isHighlighted }: {
+function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPreview, onDownload, allMessages, onRetry, isStarred, isPinned, selectionMode, isSelected, onToggleSelect, isHighlighted, activeConversation, onMessageExpiry }: {
   message: Message; isOwn: boolean; showName: boolean;
   onReply: () => void; onContextMenu: (e: React.MouseEvent) => void;
   onPreview: (d: FileData) => void; onDownload: (d: FileData) => void;
@@ -996,6 +1027,8 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
   isStarred: boolean; isPinned: boolean;
   selectionMode: boolean; isSelected: boolean; onToggleSelect: () => void;
   isHighlighted?: boolean;
+  activeConversation?: string;
+  onMessageExpiry?: (conversationId: string, messageId: string) => void;
 }) {
   const [showActions, setShowActions] = useState(false);
   const isFileMessage = message.message_type === 'file' || message.message_type === 'image';
@@ -1034,7 +1067,15 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
   ) : null;
 
   const StatusFooter = ({ className: cls }: { className?: string }) => (
-    <div className={cn('flex items-center gap-1 justify-end', cls)}>
+    <div className={cn('flex items-center gap-1 justify-end flex-wrap', cls)}>
+      {message.expires_at && activeConversation && onMessageExpiry && (
+        <DisappearingMessageBadge
+          expiresAt={message.expires_at}
+          messageId={message.id}
+          onExpire={() => onMessageExpiry(activeConversation, message.id)}
+        />
+      )}
+      <ForwardSecrecyBadge encryptedContent={message.encrypted_content} />
       {isPinned && <Pin className={cn('w-3 h-3', isOwn ? 'text-white/50' : 'text-[var(--accent)]')} />}
       {isStarred && <Star className={cn('w-3 h-3 fill-current', isOwn ? 'text-yellow-300' : 'text-yellow-500')} />}
       {message.edited_at && <span className={cn('text-[10px] italic', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>edited</span>}
@@ -1143,35 +1184,55 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
             <div className="leading-relaxed whitespace-pre-wrap break-words">
               {message.content && !isValidEncryptedMessage(message.content)
                 ? (() => {
-                    try {
-                      const parsed = JSON.parse(message.content.trim());
-                      if (parsed.type === 'location' && parsed.lat != null && parsed.lng != null) {
-                        return <LocationBubble lat={parsed.lat} lng={parsed.lng} isOwn={isOwn} />;
-                      }
-                      if (parsed.type === 'gif' && parsed.url) {
-                        return (
-                          <div className="rounded-lg overflow-hidden max-w-[280px]">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={parsed.previewUrl || parsed.url} alt={parsed.title || 'GIF'} className="w-full rounded-lg" loading="lazy" />
-                            <span className="text-[9px] opacity-40 mt-0.5 block">via GIPHY</span>
-                          </div>
-                        );
-                      }
-                      if (parsed.type === 'poll' && parsed.pollId) {
-                        return <PollBubble pollId={parsed.pollId} isOwn={isOwn} />;
-                      }
-                      // If JSON is valid but not a special type, fall through to regular text processing
-                    } catch (error) { 
-                      console.log('JSON parse failed for message:', message.content, error);
-                      // Not valid JSON, fall through to regular text processing
+                  try {
+                    const parsed = JSON.parse(message.content.trim());
+                    if (parsed.type === 'location' && parsed.lat != null && parsed.lng != null) {
+                      return <LocationBubble lat={parsed.lat} lng={parsed.lng} isOwn={isOwn} />;
                     }
-                    // Regular text processing for mentions
-                    const mentionRegex = /@(\w+)/g;
-                    const parts = message.content.split(mentionRegex);
-                    if (parts.length > 1) return parts.map((part: string, i: number) => i % 2 === 1 ? <span key={i} className="text-[var(--accent)] font-semibold">@{part}</span> : <span key={i}>{part}</span>);
-                    return message.content;
-                  })()
-                : <span className="italic opacity-70 flex items-center gap-1"><Lock className="w-3 h-3 inline" /> Encrypted message</span>}
+                    if (parsed.type === 'gif' && parsed.url) {
+                      return (
+                        <div className="rounded-lg overflow-hidden max-w-[280px]">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={parsed.previewUrl || parsed.url} alt={parsed.title || 'GIF'} className="w-full rounded-lg" loading="lazy" />
+                          <span className="text-[9px] opacity-40 mt-0.5 block">via GIPHY</span>
+                        </div>
+                      );
+                    }
+                    if (parsed.type === 'poll' && parsed.pollId) {
+                      return <PollBubble pollId={parsed.pollId} isOwn={isOwn} />;
+                    }
+                    // If JSON is valid but not a special type, fall through to regular text processing
+                  } catch (error) {
+                    console.log('JSON parse failed for message:', message.content, error);
+                    // Not valid JSON, fall through to regular text processing
+                  }
+                  // Check for special decryption status placeholders
+                  const decryptionStatuses = [
+                    '🔐 Waiting for peer to share keys...',
+                    '🔒 Initializing secure session...',
+                    '🔄 Negotiating encryption...',
+                    '⏳ Processing message...',
+                    '🔒 Decrypting...'
+                  ];
+                  if (decryptionStatuses.includes(message.content)) {
+                    return (
+                      <span className="italic opacity-70 flex items-center gap-1.5 py-1">
+                        {message.content.startsWith('🔐') && <AlertCircle className="w-3.5 h-3.5 text-amber-400" />}
+                        {message.content.startsWith('🔄') && <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400" />}
+                        {message.content.startsWith('⏳') && <Loader2 className="w-3.5 h-3.5 animate-spin opacity-50" />}
+                        {message.content.startsWith('🔒') && <Lock className="w-3.5 h-3.5 opacity-50" />}
+                        {message.content}
+                      </span>
+                    );
+                  }
+
+                  // Regular text processing for mentions
+                  const mentionRegex = /@(\w+)/g;
+                  const parts = message.content.split(mentionRegex);
+                  if (parts.length > 1) return parts.map((part: string, i: number) => i % 2 === 1 ? <span key={i} className="text-[var(--accent)] font-semibold">@{part}</span> : <span key={i}>{part}</span>);
+                  return message.content;
+                })()
+                : <span className="italic opacity-60 flex items-center gap-1.5 py-1"><Lock className="w-3.5 h-3.5 inline" /> Encrypted message</span>}
             </div>
             <StatusFooter className="mt-0.5" />
           </div>

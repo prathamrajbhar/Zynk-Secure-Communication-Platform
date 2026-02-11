@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { useChatStore, Conversation, Message } from '@/stores/chatStore';
+import { useDisappearingMessageStore } from '@/stores/disappearingMessageStore';
 import { cn, getInitials, getAvatarColor } from '@/lib/utils';
 import { X, Search, Send, Users, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -48,7 +49,8 @@ export default function ForwardMessageModal({ isOpen, messages, onClose }: Forwa
           if (!content) continue; // Skip messages that couldn't be decrypted
           const prefix = messages.length > 1 ? '' : '↪ Forwarded:\n';
           const forwardContent = `${prefix}${content}`;
-          sendMessageOptimistic(convId, forwardContent, msg.message_type);
+          const timer = useDisappearingMessageStore.getState().getTimer(convId);
+          sendMessageOptimistic(convId, forwardContent, msg.message_type, undefined, timer);
         }
       }
       toast.success(`Forwarded to ${selectedConvs.length} chat${selectedConvs.length > 1 ? 's' : ''}`);

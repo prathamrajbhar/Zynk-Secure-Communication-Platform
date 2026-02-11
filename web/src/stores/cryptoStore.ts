@@ -20,6 +20,8 @@ import { create } from 'zustand';
 import api from '@/lib/api';
 import logger from '@/lib/logger';
 import { getSocket, SOCKET_EVENTS } from '@/lib/socket';
+import { useDoubleRatchetStore, isSignalProtocolMessage } from '@/stores/doubleRatchetStore';
+import { isDoubleRatchetMessage } from '@/lib/doubleRatchet';
 import {
   generateKeyPair,
   buildKeyUploadPayload,
@@ -215,57 +217,65 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
     _initializationPromise = (async () => {
 
-    // Try to load existing keys
-    const existing = loadKeys(userId);
-    if (existing) {
-      logger.debug('[E2EE] Loaded existing key pair from localStorage');
+      // Try to load existing keys
+      const existing = loadKeys(userId);
+      if (existing) {
+        logger.debug('[E2EE] Loaded existing key pair from localStorage');
 
-      try {
-        const payload = await buildKeyUploadPayload(existing.publicKey);
-        await api.post('/keys/upload', payload);
-        logger.debug('[E2EE] Re-synced key with server');
-      } catch (e) {
-        logger.warn('[E2EE] Key re-sync failed (non-fatal):', e);
+        try {
+          const payload = await buildKeyUploadPayload(existing.publicKey);
+          await api.post('/keys/upload', payload);
+          logger.debug('[E2EE] Re-synced key with server');
+        } catch (e) {
+          logger.warn('[E2EE] Key re-sync failed (non-fatal):', e);
+        }
+
+        // Restore persisted group sender keys
+        const ownGroupKeys = await hydrateOwnGroupKeys(userId);
+        const groupSenderKeys = await hydrateReceivedGroupKeys(userId);
+
+        set({
+          isInitialized: true,
+          userId,
+          publicKey: existing.publicKey,
+          privateKey: existing.privateKey,
+          aesKeys: new Map(),
+          ownGroupKeys,
+          groupSenderKeys,
+        });
+
+        // Trigger Signal session sync in background
+        useDoubleRatchetStore.getState().syncSessionsFromServer().catch(err => {
+          logger.warn('[E2EE] Initial session sync failed:', err);
+        });
+        return;
       }
 
-      // Restore persisted group sender keys
-      const ownGroupKeys = await hydrateOwnGroupKeys(userId);
-      const groupSenderKeys = await hydrateReceivedGroupKeys(userId);
+      // First time — generate and upload
+      logger.debug('[E2EE] Generating new key pair...');
+      try {
+        const kp = await generateKeyPair();
+        const payload = await buildKeyUploadPayload(kp.publicKey);
+        await api.post('/keys/upload', payload);
+        storeKeys(userId, kp.publicKey, kp.privateKey);
+        logger.debug('[E2EE] Keys generated and uploaded');
 
-      set({
-        isInitialized: true,
-        userId,
-        publicKey: existing.publicKey,
-        privateKey: existing.privateKey,
-        aesKeys: new Map(),
-        ownGroupKeys,
-        groupSenderKeys,
-      });
-      return;
-    }
+        set({
+          isInitialized: true,
+          userId,
+          publicKey: kp.publicKey,
+          privateKey: kp.privateKey,
+          aesKeys: new Map(),
+          ownGroupKeys: new Map(),
+          groupSenderKeys: new Map(),
+        });
 
-    // First time — generate and upload
-    logger.debug('[E2EE] Generating new key pair...');
-    try {
-      const kp = await generateKeyPair();
-      const payload = await buildKeyUploadPayload(kp.publicKey);
-      await api.post('/keys/upload', payload);
-      storeKeys(userId, kp.publicKey, kp.privateKey);
-      logger.debug('[E2EE] Keys generated and uploaded');
-
-      set({
-        isInitialized: true,
-        userId,
-        publicKey: kp.publicKey,
-        privateKey: kp.privateKey,
-        aesKeys: new Map(),
-        ownGroupKeys: new Map(),
-        groupSenderKeys: new Map(),
-      });
-    } catch (err) {
-      logger.error('[E2EE] Key generation/upload failed:', err);
-      throw err;
-    }
+        // Sync (will be empty of course, but good for consistency)
+        useDoubleRatchetStore.getState().syncSessionsFromServer().catch(() => { });
+      } catch (err) {
+        logger.error('[E2EE] Key generation/upload failed:', err);
+        throw err;
+      }
 
     })(); // end of _initializationPromise IIFE
 
@@ -277,12 +287,28 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   /**
-   * Encrypt plaintext for a remote user (1:1). Returns JSON string of v3 EncryptedEnvelope.
+   * Encrypt plaintext for a remote user (1:1). Returns JSON string of v6 (Signal Protocol) or v3 (fallback) EncryptedEnvelope.
+   * If Signal Protocol is enabled and a session exists, uses v6 (forward/future secrecy).
+   * Otherwise falls back to v3 (static ECDH).
    */
   encrypt: async (remoteUserId: string, plaintext: string): Promise<string> => {
     const { privateKey, publicKey, aesKeys } = get();
     if (!privateKey || !publicKey) throw new Error('E2EE not initialized');
 
+    // Try Signal Protocol first if enabled
+    const ratchetStore = useDoubleRatchetStore.getState();
+    if (ratchetStore.enabled) {
+      const session = ratchetStore.getSession(remoteUserId);
+      if (session) {
+        try {
+          return await ratchetStore.encryptWithRatchet(remoteUserId, plaintext, publicKey);
+        } catch (err) {
+          logger.warn('[E2EE] Signal Protocol encrypt failed, falling back to v3:', err);
+        }
+      }
+    }
+
+    // Fallback to v3 static ECDH
     let aesKey = aesKeys.get(remoteUserId);
     if (!aesKey) {
       const remotePub = await fetchRemotePublicKey(remoteUserId);
@@ -297,10 +323,22 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
   /**
    * Decrypt ciphertext from a remote user (1:1). Returns plaintext.
+   * Handles both v6 (Signal Protocol), v5 (old Double Ratchet), and v3 (static ECDH) envelopes.
    */
   decrypt: async (remoteUserId: string, ciphertextJson: string): Promise<string> => {
     const { privateKey, aesKeys } = get();
     if (!privateKey) throw new Error('E2EE not initialized');
+
+    // Check if this is a Signal Protocol (v6) message
+    if (isSignalProtocolMessage(ciphertextJson)) {
+      try {
+        const ratchetStore = useDoubleRatchetStore.getState();
+        return await ratchetStore.decryptWithRatchet(remoteUserId, ciphertextJson);
+      } catch (err) {
+        logger.warn('[E2EE] Signal Protocol decrypt failed:', err);
+        throw new Error('Signal Protocol decryption failed: ' + (err instanceof Error ? err.message : String(err)));
+      }
+    }
 
     if (!isValidEncryptedMessage(ciphertextJson)) {
       return ciphertextJson;
@@ -309,7 +347,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     let aesKey = aesKeys.get(remoteUserId);
     if (!aesKey) {
       const remotePub = await fetchRemotePublicKey(remoteUserId);
-      if (!remotePub) return '[Cannot decrypt — missing key]';
+      if (!remotePub) throw new Error('Missing remote public key');
       aesKey = await deriveAESKey(privateKey, remotePub);
       aesKeys.set(remoteUserId, aesKey);
       set({ aesKeys: new Map(aesKeys) });
@@ -322,14 +360,14 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       try {
         aesKeys.delete(remoteUserId);
         const remotePub = await fetchRemotePublicKey(remoteUserId);
-        if (!remotePub) return '[Decryption failed — missing key]';
+        if (!remotePub) throw new Error('Decryption failed: missing key on retry');
         aesKey = await deriveAESKey(privateKey, remotePub);
         aesKeys.set(remoteUserId, aesKey);
         set({ aesKeys: new Map(aesKeys) });
         return await decryptText(aesKey, ciphertextJson);
       } catch (retryErr) {
         logger.error('[E2EE] Decrypt retry failed:', retryErr);
-        return '[Decryption failed]';
+        throw new Error('Decryption failed after retry');
       }
     }
   },

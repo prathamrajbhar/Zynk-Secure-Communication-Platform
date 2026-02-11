@@ -5,12 +5,13 @@ import { useUIStore, COLOR_SCHEMES, CHAT_BACKGROUNDS, type ChatBubbleStyle, type
 import {
   X, Moon, Sun, Shield, Smartphone, Trash2,
   Palette, MessageSquare, Type, Info, Heart, Globe, Bell, BellOff,
-  Eye, Clock, CheckCircle2,
+  Eye, Clock, CheckCircle2, Lock,
   Volume2, VolumeX, Phone, HardDrive, ChevronRight,
 } from 'lucide-react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { cn } from '@/lib/utils';
+import DoubleRatchetToggle from './DoubleRatchetToggle';
 
 interface Device { id: string; device_name: string; platform: string; last_active_at: string; created_at: string; is_current?: boolean; }
 
@@ -89,6 +90,7 @@ export default function SettingsPanel() {
     { id: 'appearance' as const, icon: Palette, label: 'Appearance' },
     { id: 'notifications' as const, icon: Bell, label: 'Notifications' },
     { id: 'privacy' as const, icon: Shield, label: 'Privacy' },
+    { id: 'security' as const, icon: Lock, label: 'Security' },
     { id: 'devices' as const, icon: Smartphone, label: 'Devices' },
     { id: 'storage' as const, icon: HardDrive, label: 'Storage' },
     { id: 'about' as const, icon: Info, label: 'About' },
@@ -240,6 +242,15 @@ export default function SettingsPanel() {
                   right={<Toggle active={privacy.show_last_seen} onChange={() => updatePrivacy('show_last_seen', !privacy.show_last_seen)} />} />
                 <SettingRow icon={Eye} label="Read Receipts" desc="Let others see when you read"
                   right={<Toggle active={privacy.show_read_receipts} onChange={() => updatePrivacy('show_read_receipts', !privacy.show_read_receipts)} />} />
+              </div>
+            )}
+            {settingsTab === 'security' && (
+              <div className="py-4 px-4">
+                <div className="mb-4">
+                  <h4 className="text-sm font-semibold text-[var(--text-primary)] mb-1">End-to-End Encryption</h4>
+                  <p className="text-xs text-[var(--text-muted)] mb-3">Your messages are always encrypted. Enable forward secrecy for maximum security.</p>
+                </div>
+                <DoubleRatchetToggle />
               </div>
             )}
 

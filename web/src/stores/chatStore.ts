@@ -18,6 +18,7 @@ export interface Message {
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
   created_at: string;
   edited_at?: string;
+  expires_at?: string; // Disappearing messages expiry timestamp
   sender_username?: string;
   sender_display_name?: string;
   sender_avatar?: string;
@@ -35,6 +36,7 @@ export interface PendingMessage {
   replyToId?: string;
   createdAt: string;
   retryCount: number;
+  expiresInSeconds?: number | null;
 }
 
 export interface Conversation {
@@ -101,7 +103,7 @@ interface ChatState {
 
   // Enhanced message sending with optimistic updates
   sendMessage: (conversationId: string | null, recipientId: string | null, content: string, messageType?: string) => void;
-  sendMessageOptimistic: (conversationId: string, content: string, messageType?: string, replyToId?: string) => string;
+  sendMessageOptimistic: (conversationId: string, content: string, messageType?: string, replyToId?: string, expiresInSeconds?: number | null) => string;
   markMessageSent: (tempId: string, realMessage: Message) => void;
   markMessageFailed: (tempId: string) => void;
   retryMessage: (tempId: string) => void;
@@ -110,6 +112,7 @@ interface ChatState {
   processMessageQueue: () => void;
 
   addMessage: (message: Message) => void;
+  setMessages: (conversationId: string, messages: Message[]) => void;
   updateMessageStatus: (messageId: string, status: Message['status']) => void;
   updateConversationMessagesStatus: (conversationId: string, senderId: string, status: Message['status']) => void;
   setTyping: (conversationId: string, userId: string, isTyping: boolean) => void;
@@ -179,7 +182,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (cryptoStore.isInitialized) {
         convs = await Promise.all(convs.map(async (c: Conversation) => {
           if (!c.last_message) return c;
-          
+
           // Skip already-plain messages
           if (!isEncryptedMessage(c.last_message)) {
             // Might be raw file JSON (non-encrypted file metadata)
@@ -220,7 +223,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           } catch (error) {
             logger.warn(`Failed to decrypt last message for conversation ${c.id}:`, error);
           }
-          
+
           return c;
         }));
       }
@@ -345,7 +348,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
         if (m.content && !isEncryptedMessage(m.content)) return m;
         if (!m.encrypted_content) return m;
-        
+
         const senderId = isOneToOne ? resolvedPartnerId : m.sender_id;
         if (!senderId) return m;
 
@@ -410,7 +413,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // Optimistic send - adds message to UI immediately, ENCRYPTS before transmission
-  sendMessageOptimistic: (conversationId, content, messageType = 'text', replyToId) => {
+  sendMessageOptimistic: (conversationId, content, messageType = 'text', replyToId, expiresInSeconds = null) => {
     const tempId = generateTempId();
     const socket = getSocket();
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -457,6 +460,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       replyToId,
       createdAt: new Date().toISOString(),
       retryCount: 0,
+      expiresInSeconds,
     };
 
     set(state => {
@@ -507,6 +511,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           message_type: messageType,
           reply_to_id: replyToId,
           temp_id: tempId,
+          expires_in_seconds: expiresInSeconds,
         });
       };
 
@@ -537,6 +542,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     return tempId;
+  },
+
+  setMessages: (conversationId, messages) => {
+    set(state => ({
+      messages: { ...state.messages, [conversationId]: messages }
+    }));
   },
 
   markMessageSent: (tempId, realMessage) => {
@@ -669,6 +680,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           message_type: failed.messageType,
           reply_to_id: failed.replyToId,
           temp_id: tempId,
+          expires_in_seconds: failed.expiresInSeconds,
         });
 
         // Re-arm timeout for retry
@@ -717,6 +729,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           message_type: msg.messageType,
           reply_to_id: msg.replyToId,
           temp_id: tempId,
+          expires_in_seconds: msg.expiresInSeconds,
         });
       } catch (error) {
         logger.error('Failed to encrypt queued message:', error);
@@ -1225,7 +1238,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(state => {
       const newMessages = { ...state.messages };
       let updated = false;
-      
+
       Object.keys(newMessages).forEach(convId => {
         newMessages[convId] = newMessages[convId].map(msg => {
           if (msg.id === messageId) {
@@ -1235,7 +1248,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return msg;
         });
       });
-      
+
       if (updated) {
         logger.info(`[ChatStore] Updated content for message ${messageId}`);
         return { messages: newMessages };
@@ -1251,39 +1264,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
   safeDecryptMessage: async (messageId: string, conversationId: string, senderId: string, encryptedContent: string, isGroup = false): Promise<string> => {
     const cryptoStore = useCryptoStore.getState();
     const queueStore = useDecryptionQueue.getState();
-    
+
     // If crypto isn't ready, show encrypted placeholder and queue for later
     if (!cryptoStore.isInitialized) {
       queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, 'Crypto not initialized');
       return '🔒 Decrypting...';
     }
-    
+
     try {
       let decrypted: string;
-      
+
       if (isGroup) {
         decrypted = await cryptoStore.decryptGroup(senderId, conversationId, encryptedContent);
       } else {
         decrypted = await cryptoStore.decrypt(senderId, encryptedContent);
       }
-      
+
       // Success - remove from failed queue if it was there
       queueStore.removeFailedDecryption(messageId);
       return decrypted;
-      
+
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.warn(`[ChatStore] Decryption failed for message ${messageId}:`, error);
-      
+
       // Add to retry queue instead of permanent failure
       queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, errorMsg);
-      
-      // Return a helpful placeholder instead of "[Decryption failed]"
-      if (errorMsg.includes('missing key') || errorMsg.includes('Cannot decrypt')) {
-        return '🔐 Waiting for keys...';
+
+      // Return a helpful placeholder instead of generic error
+      if (errorMsg.includes('missing key') || errorMsg.includes('bundle') || errorMsg.includes('No key bundle')) {
+        return '🔐 Waiting for peer to share keys...';
       }
       if (errorMsg.includes('not initialized')) {
-        return '🔒 Decrypting...';
+        return '🔒 Initializing secure session...';
+      }
+      if (errorMsg.includes('Signal Protocol')) {
+        return '🔄 Negotiating encryption...';
       }
       return '⏳ Processing message...';
     }
