@@ -179,7 +179,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (cryptoStore.isInitialized) {
         convs = await Promise.all(convs.map(async (c: Conversation) => {
           if (!c.last_message) return c;
-          
+
           // Skip already-plain messages
           if (!isEncryptedMessage(c.last_message)) {
             // Might be raw file JSON (non-encrypted file metadata)
@@ -220,7 +220,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           } catch (error) {
             logger.warn(`Failed to decrypt last message for conversation ${c.id}:`, error);
           }
-          
+
           return c;
         }));
       }
@@ -255,7 +255,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const conversation = get().conversations.find(c => c.id === conversationId);
       const isOneToOne = conversation?.type === 'one_to_one';
       const partnerId = isOneToOne ? conversation.other_user?.user_id : null;
-      const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+      let currentUserId = null;
+      if (typeof window !== 'undefined') {
+        try {
+          currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+        } catch { /* ignore */ }
+      }
       const resolvedPartnerId = partnerId || (currentUserId ? messages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
 
       // Use safe decryption for all messages
@@ -323,12 +328,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const existing = get().messages[conversationId] || [];
     if (existing.length === 0 || !get().hasMoreMessages[conversationId]) return;
 
-    const oldestMsg = existing.find(m => !m.isOptimistic);
+    const oldestMsg = existing.find(m => !m.isOptimistic && m.id);
     if (!oldestMsg) return;
 
     try {
-      const oldestTimestamp = Math.floor(new Date(oldestMsg.created_at).getTime() / 1000);
-      const res = await api.get(`/messages/${conversationId}?limit=50&before=${oldestTimestamp}`);
+      const res = await api.get(`/messages/${conversationId}?limit=50&cursor=${oldestMsg.id}`);
       let olderMessages = res.data.messages || [];
 
       // Wait for crypto before attempting decryption
@@ -338,14 +342,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const conversation = get().conversations.find(c => c.id === conversationId);
       const isOneToOne = conversation?.type === 'one_to_one';
       const partnerId = isOneToOne ? conversation.other_user?.user_id : null;
-      const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+      let currentUserId = null;
+      if (typeof window !== 'undefined') {
+        try {
+          currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+        } catch { /* ignore */ }
+      }
       const resolvedPartnerId = partnerId || (currentUserId ? olderMessages.find((m: Message) => m.sender_id !== currentUserId)?.sender_id : null);
 
       // Use safe decryption for all messages
       olderMessages = await Promise.all(olderMessages.map(async (m: Message) => {
         if (m.content && !isEncryptedMessage(m.content)) return m;
         if (!m.encrypted_content) return m;
-        
+
         const senderId = isOneToOne ? resolvedPartnerId : m.sender_id;
         if (!senderId) return m;
 
@@ -734,38 +743,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Check if this is a confirmation of an optimistic message
       const tempId = (message.metadata as { temp_id?: string })?.temp_id || (message as Message & { temp_id?: string }).temp_id;
 
-      // If this is our own message echoed back via broadcast, check for optimistic match
-      if (message.sender_id === currentUserId && tempId) {
-        const optimisticIndex = existing.findIndex(m => m.tempId === tempId);
-        if (optimisticIndex !== -1) {
-          // Replace optimistic with real message, preserving plaintext content
-          const updatedMessagesList = [...existing];
-          const oldMsg = updatedMessagesList[optimisticIndex];
-          updatedMessagesList[optimisticIndex] = {
-            ...oldMsg,
-            ...message,
-            content: oldMsg.content || message.content, // Keep optimistic plaintext
-            isOptimistic: false,
-            tempId: tempId,
-          };
-          const updatedPending = new Map(state.pendingMessages);
-          updatedPending.delete(tempId);
-          return {
-            messages: { ...state.messages, [convId]: updatedMessagesList },
-            pendingMessages: updatedPending,
-          };
-        }
-      }
-
-      // If this is our own message echoed back without temp_id, skip it 
-      // (the optimistic message is already in the list)
-      if (message.sender_id === currentUserId && !tempId) {
-        const alreadyExists = existing.some(m =>
-          m.id === message.id || (m.isOptimistic && m.created_at === message.created_at)
-        );
-        if (alreadyExists) return state;
-      }
-
       // Robust deduplication: Check if we already have this message by ID
       const isDuplicate = existing.some(m =>
         (m.id === message.id && !m.isOptimistic)
@@ -785,10 +762,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const updatedMessagesList = [...existing];
         const oldMsg = updatedMessagesList[optimisticIndex];
 
-        // CRITICAL: Preserve the optimistic plaintext if the broadcast doesn't
-        // carry properly decrypted content
-        const keepOldContent = oldMsg.isOptimistic && oldMsg.content &&
-          (!message.content || isEncryptedMessage(message.content));
+        // CRITICAL: Preserve the plaintext content if the broadcast doesn't
+        // carry properly decrypted content but we already have it locally.
+        const isOldContentDecrypted = oldMsg.content && !isEncryptedMessage(oldMsg.content);
+        const isNewContentEncrypted = !message.content || isEncryptedMessage(message.content);
+        const keepOldContent = isOldContentDecrypted && isNewContentEncrypted;
 
         updatedMessagesList[optimisticIndex] = {
           ...oldMsg,
@@ -799,7 +777,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
 
         const updatedPending = new Map(state.pendingMessages);
-        if (tempId) updatedPending.delete(tempId);
+        const finalTempId = tempId || oldMsg.tempId;
+        if (finalTempId) updatedPending.delete(finalTempId);
 
         return {
           messages: { ...state.messages, [convId]: updatedMessagesList },
@@ -814,27 +793,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // Update conversation's last message or refetch if new
       if (!state.conversations.some(c => c.id === convId)) {
-        // Trigger a refetch for new conversations
         get().fetchConversations();
         return { messages: updatedMessages };
       }
 
       const updatedConversations = state.conversations.map(c => {
         if (c.id === convId) {
-          // For file/image messages, show friendly preview text in sidebar
+          // Improve sidebar preview for JSON-encoded specialties (GIFs, locations, polls)
           let displayContent = message.content;
-          if (displayContent && ['file', 'image'].includes(message.message_type)) {
+          if (displayContent && !isEncryptedMessage(displayContent)) {
             try {
-              const parsed = JSON.parse(displayContent);
-              if (parsed.filename) {
+              const parsed = JSON.parse(displayContent.trim());
+              if (parsed.type === 'gif') displayContent = '🎬 GIF';
+              else if (parsed.type === 'location') displayContent = '📍 Location';
+              else if (parsed.type === 'poll') displayContent = '📊 Poll';
+              else if (parsed.filename) {
                 displayContent = parsed.mime_type?.startsWith('image/') ? '📷 Photo' : `📎 ${parsed.filename}`;
               }
-            } catch { /* not file JSON, keep as-is */ }
+            } catch { /* keep as-is if not valid specialty JSON */ }
+          } else if (!displayContent && message.message_type === 'image') {
+            displayContent = '📷 Photo';
+          } else if (!displayContent && message.message_type === 'file') {
+            displayContent = '📎 File';
+          } else if (isEncryptedMessage(displayContent || '')) {
+            displayContent = '🔒 Encrypted';
           }
+
           return {
             ...c,
             last_message: message.encrypted_content,
-            last_message_decrypted: displayContent,
+            last_message_decrypted: displayContent || 'New message',
             last_message_at: message.created_at,
             last_message_sender_id: message.sender_id,
             unread_count: state.activeConversation === convId ? c.unread_count : (c.unread_count || 0) + 1,
@@ -850,7 +838,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return new Date(bTime).getTime() - new Date(aTime).getTime();
       });
 
-      return { messages: updatedMessages, conversations: updatedConversations };
+      return {
+        messages: updatedMessages,
+        conversations: updatedConversations,
+      };
     });
   },
 
@@ -1225,7 +1216,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(state => {
       const newMessages = { ...state.messages };
       let updated = false;
-      
+
       Object.keys(newMessages).forEach(convId => {
         newMessages[convId] = newMessages[convId].map(msg => {
           if (msg.id === messageId) {
@@ -1235,7 +1226,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return msg;
         });
       });
-      
+
       if (updated) {
         logger.info(`[ChatStore] Updated content for message ${messageId}`);
         return { messages: newMessages };
@@ -1251,33 +1242,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
   safeDecryptMessage: async (messageId: string, conversationId: string, senderId: string, encryptedContent: string, isGroup = false): Promise<string> => {
     const cryptoStore = useCryptoStore.getState();
     const queueStore = useDecryptionQueue.getState();
-    
+
     // If crypto isn't ready, show encrypted placeholder and queue for later
     if (!cryptoStore.isInitialized) {
       queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, 'Crypto not initialized');
       return '🔒 Decrypting...';
     }
-    
+
     try {
       let decrypted: string;
-      
+
       if (isGroup) {
         decrypted = await cryptoStore.decryptGroup(senderId, conversationId, encryptedContent);
       } else {
         decrypted = await cryptoStore.decrypt(senderId, encryptedContent);
       }
-      
+
       // Success - remove from failed queue if it was there
       queueStore.removeFailedDecryption(messageId);
       return decrypted;
-      
+
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.warn(`[ChatStore] Decryption failed for message ${messageId}:`, error);
-      
+
       // Add to retry queue instead of permanent failure
       queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, errorMsg);
-      
+
       // Return a helpful placeholder instead of "[Decryption failed]"
       if (errorMsg.includes('missing key') || errorMsg.includes('Cannot decrypt')) {
         return '🔐 Waiting for keys...';

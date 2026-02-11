@@ -26,7 +26,7 @@ export interface FailedDecryption {
 interface DecryptionQueueState {
   failedDecryptions: Map<string, FailedDecryption>;
   isProcessing: boolean;
-  
+
   // Actions
   addFailedDecryption: (messageId: string, conversationId: string, senderId: string, encryptedContent: string, error?: string) => void;
   removeFailedDecryption: (messageId: string) => void;
@@ -42,6 +42,7 @@ const QUEUE_STORAGE_KEY = 'zynk_decryption_queue';
 
 // Load persisted queue from localStorage
 function loadPersistedQueue(): Map<string, FailedDecryption> {
+  if (typeof window === 'undefined') return new Map();
   try {
     const stored = localStorage.getItem(QUEUE_STORAGE_KEY);
     if (stored) {
@@ -56,6 +57,7 @@ function loadPersistedQueue(): Map<string, FailedDecryption> {
 
 // Save queue to localStorage
 function saveQueueToStorage(queue: Map<string, FailedDecryption>) {
+  if (typeof window === 'undefined') return;
   try {
     const obj: Record<string, FailedDecryption> = {};
     queue.forEach((value, key) => {
@@ -74,7 +76,7 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
   addFailedDecryption: (messageId, conversationId, senderId, encryptedContent, error) => {
     const now = Date.now();
     const existing = get().failedDecryptions.get(messageId);
-    
+
     const failedDecryption: FailedDecryption = {
       messageId,
       conversationId,
@@ -89,10 +91,10 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
 
     const newQueue = new Map(get().failedDecryptions);
     newQueue.set(messageId, failedDecryption);
-    
+
     set({ failedDecryptions: newQueue });
     saveQueueToStorage(newQueue);
-    
+
     logger.debug(`[DecryptQueue] Added failed decryption for message ${messageId} (attempt ${failedDecryption.attempts})`);
 
     // Schedule retry if not at max attempts
@@ -118,7 +120,7 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
     if (isProcessing || failedDecryptions.size === 0) return;
 
     set({ isProcessing: true });
-    
+
     const cryptoStore = useCryptoStore.getState();
     if (!cryptoStore.isInitialized) {
       set({ isProcessing: false });
@@ -135,7 +137,7 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
       // Check if enough time has passed for retry
       const timeSinceLastAttempt = now - failedDecryption.lastAttempt;
       const requiredInterval = RETRY_INTERVALS[Math.min(failedDecryption.attempts - 1, RETRY_INTERVALS.length - 1)];
-      
+
       if (timeSinceLastAttempt < requiredInterval) continue;
 
       try {
@@ -157,7 +159,7 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
         // Success! Update the message in chat store
         chatStore.updateMessageContent(messageId, decryptedContent);
         processedIds.push(messageId);
-        
+
         logger.info(`[DecryptQueue] Successfully decrypted message ${messageId} after ${failedDecryption.attempts} attempts`);
 
       } catch (error) {
@@ -172,7 +174,7 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
         const newQueue = new Map(failedDecryptions);
         newQueue.set(messageId, updatedDecryption);
         set({ failedDecryptions: newQueue });
-        
+
         logger.debug(`[DecryptQueue] Retry ${updatedDecryption.attempts} failed for message ${messageId}:`, error);
       }
     }
@@ -190,20 +192,22 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
 
   retryAll: async () => {
     const { failedDecryptions } = get();
-    
+
     // Reset last attempt time to force immediate retry
     const resetQueue = new Map(failedDecryptions);
     resetQueue.forEach((decryption, messageId) => {
       resetQueue.set(messageId, { ...decryption, lastAttempt: 0 });
     });
-    
+
     set({ failedDecryptions: resetQueue });
     await get().processQueue();
   },
 
   clearQueue: () => {
     set({ failedDecryptions: new Map() });
-    localStorage.removeItem(QUEUE_STORAGE_KEY);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(QUEUE_STORAGE_KEY);
+    }
     logger.info('[DecryptQueue] Queue cleared');
   },
 
@@ -211,10 +215,10 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
     const queue = get().failedDecryptions;
     const now = Date.now();
     const oneHourAgo = now - 3600000;
-    
+
     let recent = 0;
     let old = 0;
-    
+
     queue.forEach(item => {
       if (item.firstFailed > oneHourAgo) {
         recent++;
@@ -232,14 +236,14 @@ let backgroundProcessor: ReturnType<typeof setInterval> | null = null;
 
 export function startDecryptionQueueProcessor() {
   if (backgroundProcessor) return;
-  
+
   backgroundProcessor = setInterval(() => {
     const queue = useDecryptionQueue.getState();
     if (queue.failedDecryptions.size > 0) {
       queue.processQueue();
     }
   }, 30000); // 30 seconds
-  
+
   logger.info('[DecryptQueue] Background processor started');
 }
 

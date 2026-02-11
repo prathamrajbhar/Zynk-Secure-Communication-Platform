@@ -167,9 +167,8 @@ export function isValidEncryptedMessage(s: string): boolean {
   if (!t.startsWith('{')) return false;
   try {
     const obj = JSON.parse(t);
-    // v3 envelope only
-    if (obj.v === 3 && obj.ct && obj.iv) return true;
-    return false;
+    // Support v3, v4 (group), and v5 envelopes
+    return (obj.v === 3 || obj.v === 4 || obj.v === 5) && !!obj.ct && !!obj.iv;
   } catch {
     return false;
   }

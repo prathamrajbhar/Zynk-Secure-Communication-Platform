@@ -3,20 +3,21 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, Message } from '@/stores/chatStore';
-import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useUIStore } from '@/stores/uiStore';
 import { formatMessageTime, getInitials, cn, getAvatarColor } from '@/lib/utils';
 import {
-  Send, Paperclip, Phone, Video, Lock, Shield,
+  Send, Paperclip, Lock, Shield,
   Check, CheckCheck, Image as ImageIcon, Smile,
   ArrowLeft, Search, Loader2, Reply, X,
   Download, RefreshCw, AlertCircle, Clock, Mic, Users,
   Star, Pin, MoreHorizontal, ChevronDown,
   Upload, BarChart3, Camera, MapPin, FileText, Music,
   Play, Pause, Sparkles,
+  Phone, Video,
 } from 'lucide-react';
-import { isValidEncryptedMessage } from '@/lib/crypto';
+import { useCallStore } from '@/stores/callStore';
+import { isEncryptedMessage } from '@/lib/crypto';
 import api from '@/lib/api';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -118,7 +119,6 @@ export default function ChatArea() {
     hasMoreMessages, fetchOlderMessages, setDraft, getDraft,
   } = useChatStore();
   const connectionStatus = useConnectionStore(state => state.status);
-  const { initiateCall } = useCallStore();
   const { chatBackground, showUserInfo, setShowUserInfo } = useUIStore();
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -168,9 +168,12 @@ export default function ChatArea() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const conversation = conversations.find(c => c.id === activeConversation);
-  const conversationMessages = useMemo(() => activeConversation ? (messages[activeConversation] || []) : [], [activeConversation, messages]);
+  const conversationMessages = useMemo(() => {
+    const raw = activeConversation ? (messages[activeConversation] || []) : [];
+    return [...raw].reverse(); // newest first for column-reverse
+  }, [activeConversation, messages]);
   const conversationMessagesLength = conversationMessages.length;
-  const lastMessageId = conversationMessagesLength > 0 ? conversationMessages[conversationMessagesLength - 1].id : null;
+  const lastMessageId = conversationMessagesLength > 0 ? conversationMessages[0].id : null;
   const typing = activeConversation ? (typingUsers[activeConversation] || []) : [];
   const [groupMembers, setGroupMembers] = useState<{ id: string; username: string; display_name?: string }[]>([]);
 
@@ -189,7 +192,35 @@ export default function ChatArea() {
     return () => { cancelled = true; };
   }, [conversation?.type, conversation?.group_info?.group_id]);
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [lastMessageId]);
+  // Handle scrolling precisely like WhatsApp
+  useEffect(() => {
+    if (!activeConversation || !lastMessageId) return;
+
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    // In flex-col-reverse, scrollTop is negative in some browsers or 0 is bottom
+    // Standard behavior: scrollTop 0 is bottom.
+    const isAtBottom = container.scrollTop > -100 && container.scrollTop <= 0;
+
+    // Check if current user is the sender
+    const lastMsg = conversationMessages[0];
+    const isOwn = lastMsg?.sender_id === user?.id;
+
+    if (isOwn || isAtBottom) {
+      // Small timeout to allow DOM to update
+      setTimeout(() => {
+        container.scrollTo({ top: 0, behavior: 'smooth' });
+      }, 50);
+    }
+  }, [lastMessageId, activeConversation, user?.id]);
+
+  // Instant jump to bottom when switching conversations
+  useEffect(() => {
+    if (activeConversation) {
+      messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  }, [activeConversation]);
 
   useEffect(() => {
     if (!activeConversation || !conversationMessages.length) return;
@@ -214,20 +245,21 @@ export default function ChatArea() {
     return () => clearTimeout(timer);
   }, [input, activeConversation, setDraft]);
 
-  // Infinite scroll
+  // Infinite scroll (WhatsApp style)
   useEffect(() => {
     const sentinel = topSentinelRef.current;
     if (!sentinel || !activeConversation) return;
+
     const observer = new IntersectionObserver(async (entries) => {
       if (entries[0].isIntersecting && hasMoreMessages[activeConversation] && !isLoadingOlder) {
         setIsLoadingOlder(true);
-        const container = messagesContainerRef.current;
-        const prevScrollHeight = container?.scrollHeight || 0;
+        // In column-reverse, adding to top is just appending to the end of the array.
+        // The scroll position stays pinned to the bottom.
         await fetchOlderMessages(activeConversation);
-        requestAnimationFrame(() => { if (container) container.scrollTop = container.scrollHeight - prevScrollHeight; });
         setIsLoadingOlder(false);
       }
-    }, { root: messagesContainerRef.current, threshold: 0.1 });
+    }, { root: messagesContainerRef.current, threshold: 1.0 });
+
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [activeConversation, hasMoreMessages, isLoadingOlder, fetchOlderMessages]);
@@ -235,7 +267,12 @@ export default function ChatArea() {
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    const handleScroll = () => setShowScrollBottom(container.scrollHeight - container.scrollTop - container.clientHeight > 200);
+    const handleScroll = () => {
+      // In column-reverse, scrollTop 0 is bottom, and it goes negative (or stays 0 depending on browser)
+      // Usually, in column-reverse, scrolling UP means scrollTop increases or becomes more negative.
+      // Let's use a simpler check:
+      setShowScrollBottom(container.scrollTop < -100);
+    };
     container.addEventListener('scroll', handleScroll, { passive: true });
     return () => container.removeEventListener('scroll', handleScroll);
   }, [activeConversation]);
@@ -303,11 +340,6 @@ export default function ChatArea() {
     } finally { setIsUploading(false); setUploadProgress(0); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
-  const handleCall = (type: 'audio' | 'video') => {
-    if (!conversation?.other_user) return;
-    initiateCall(conversation.other_user.user_id, type, conversation.other_user.display_name || conversation.other_user.username);
-  };
-
   const handleDeleteMessage = async (messageId: string, forEveryone: boolean) => {
     try {
       if (activeConversation) {
@@ -348,7 +380,10 @@ export default function ChatArea() {
     setBackgroundMenu(null);
   };
 
-  const handleScrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); setBackgroundMenu(null); };
+  const handleScrollToBottom = () => {
+    messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    setBackgroundMenu(null);
+  };
 
   const handleToggleSelect = (messageId: string) => {
     setSelectedMessages(prev => { const s = new Set(prev); if (s.has(messageId)) { s.delete(messageId); } else { s.add(messageId); } return s; });
@@ -577,13 +612,30 @@ export default function ChatArea() {
             </button>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
-            {conversation?.type === 'one_to_one' && (
+            {/* Call buttons — only for 1:1 conversations */}
+            {conversation?.type === 'one_to_one' && conversation.other_user && (
               <>
-                <button onClick={() => handleCall('video')} className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all" title="Video call" aria-label="Video call">
-                  <Video className="w-[18px] h-[18px]" />
-                </button>
-                <button onClick={() => handleCall('audio')} className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all" title="Voice call" aria-label="Voice call">
+                <button
+                  onClick={() => {
+                    const ou = conversation.other_user!;
+                    useCallStore.getState().initiateCall(ou.user_id, ou.display_name || ou.username, undefined, conversation.id, 'audio');
+                  }}
+                  className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all"
+                  title="Voice call"
+                  aria-label="Voice call"
+                >
                   <Phone className="w-[18px] h-[18px]" />
+                </button>
+                <button
+                  onClick={() => {
+                    const ou = conversation.other_user!;
+                    useCallStore.getState().initiateCall(ou.user_id, ou.display_name || ou.username, undefined, conversation.id, 'video');
+                  }}
+                  className="btn-icon hover:text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-all"
+                  title="Video call"
+                  aria-label="Video call"
+                >
+                  <Video className="w-[18px] h-[18px]" />
                 </button>
               </>
             )}
@@ -661,7 +713,7 @@ export default function ChatArea() {
 
       {/* Messages area */}
       <div ref={messagesContainerRef} role="log" aria-label="Messages" aria-live="polite"
-        className={cn('flex-1 overflow-y-auto px-4 lg:px-16 py-4 scroll-thin relative', `chat-bg-${chatBackground}`)}
+        className={cn('flex-1 overflow-y-auto px-4 lg:px-16 py-4 scroll-thin relative flex flex-col-reverse', `chat-bg-${chatBackground}`)}
         onContextMenu={handleBackgroundContextMenu}
         onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
 
@@ -677,64 +729,71 @@ export default function ChatArea() {
           </div>
         )}
 
-        <div ref={topSentinelRef} className="h-1" />
-        {isLoadingOlder && (
-          <div className="flex justify-center py-4" role="status" aria-label="Loading older messages">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--bg-surface)]/80 backdrop-blur-sm border border-[var(--border)]">
-              <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />
-              <span className="text-xs text-[var(--text-muted)] font-medium">Loading older messages...</span>
-            </div>
-          </div>
-        )}
+        <div ref={messagesEndRef} className="h-0" />
 
-        {isLoadingMessages && conversationMessages.length === 0 ? <SkeletonMessageList /> : (
-          <>
-            <div className="flex justify-center mb-6">
-              <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-surface)]/80 backdrop-blur-sm px-4 py-2 rounded-full flex items-center gap-2 border border-[var(--border)] shadow-sm">
-                <Lock className="w-3 h-3 text-[var(--success)]" /> End-to-end encrypted
-              </span>
-            </div>
-            {conversationMessages.map((msg: Message, i: number) => {
-              const showUnreadDivider = i > 0 && msg.sender_id !== user?.id && msg.status !== 'read'
-                && (i === 0 || conversationMessages[i - 1]?.status === 'read' || conversationMessages[i - 1]?.sender_id === user?.id);
-              return (
-                <div key={msg.id} id={`msg-${msg.id}`} className="message-bubble-wrapper">
-                  {showUnreadDivider && (
-                    <div className="flex items-center gap-3 my-5 animate-fade-in">
-                      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
-                      <span className="text-[11px] font-bold text-[var(--accent)] px-3 py-1 rounded-full bg-[var(--accent-subtle)] uppercase tracking-wider">New messages</span>
-                      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
-                    </div>
-                  )}
-                  <MessageBubble message={msg} isOwn={msg.sender_id === user?.id}
-                    showName={i === 0 || conversationMessages[i - 1]?.sender_id !== msg.sender_id}
-                    onReply={() => setReplyTo(msg)} onContextMenu={(e) => handleContextMenu(e, msg)}
-                    onPreview={handleFilePreview} onDownload={handleFileDownload}
-                    allMessages={conversationMessages} onRetry={retryMessage}
-                    isStarred={starredMessages.has(msg.id)} isPinned={currentPinnedMessageIds.includes(msg.id)}
-                    selectionMode={selectionMode} isSelected={selectedMessages.has(msg.id)}
-                    onToggleSelect={() => handleToggleSelect(msg.id)} isHighlighted={highlightMessageId === msg.id} />
-                </div>
-              );
-            })}
-          </>
-        )}
         {typing.length > 0 && (
-          <div className="flex items-start gap-2 mt-3 animate-fade-in" role="status" aria-label="Someone is typing">
-            <div className="bg-[var(--bg-surface)] rounded-2xl rounded-bl-md px-4 py-3 border border-[var(--border)] shadow-sm" aria-hidden="true">
+          <div className="flex items-start gap-2 mt-3 mb-4 animate-fade-in" role="status" aria-label="Someone is typing">
+            <div className="bg-[var(--bg-surface)] rounded-2xl rounded-bl-md px-4 py-3 border border-[var(--border)] shadow-sm">
               <div className="flex items-center gap-[5px]">
-                <div className="w-[7px] h-[7px] rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1.2s' }} />
-                <div className="w-[7px] h-[7px] rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '200ms', animationDuration: '1.2s' }} />
-                <div className="w-[7px] h-[7px] rounded-full bg-[var(--text-muted)] animate-bounce" style={{ animationDelay: '400ms', animationDuration: '1.2s' }} />
+                <div className="typing-dot" />
+                <div className="typing-dot" />
+                <div className="typing-dot" />
               </div>
             </div>
           </div>
         )}
-        <div ref={messagesEndRef} />
+
+        {conversationMessages.map((msg: Message, i: number) => {
+          // In column-reverse, i=0 is bottom (newest). i=N is top (oldest).
+          // We show the name if the message AFTER this one in the map (older one) has a different sender.
+          const isFirstOfBlock = i === conversationMessages.length - 1 || conversationMessages[i + 1]?.sender_id !== msg.sender_id;
+
+          const showUnreadDivider = msg.sender_id !== user?.id && msg.status !== 'read'
+            && (i === conversationMessages.length - 1 || conversationMessages[i + 1]?.status === 'read' || conversationMessages[i + 1]?.sender_id === user?.id);
+
+          return (
+            <div key={msg.id} id={`msg-${msg.id}`} className="message-bubble-wrapper">
+              <MessageBubble message={msg} isOwn={msg.sender_id === user?.id}
+                showName={isFirstOfBlock}
+                onReply={() => setReplyTo(msg)} onContextMenu={(e) => handleContextMenu(e, msg)}
+                onPreview={handleFilePreview} onDownload={handleFileDownload}
+                allMessages={conversationMessages} onRetry={retryMessage}
+                isStarred={starredMessages.has(msg.id)} isPinned={currentPinnedMessageIds.includes(msg.id)}
+                selectionMode={selectionMode} isSelected={selectedMessages.has(msg.id)}
+                onToggleSelect={() => handleToggleSelect(msg.id)} isHighlighted={highlightMessageId === msg.id} />
+
+              {showUnreadDivider && (
+                <div className="flex items-center gap-3 my-5 animate-fade-in">
+                  <div className="flex-1 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
+                  <span className="text-[11px] font-bold text-[var(--accent)] px-3 py-1 rounded-full bg-[var(--accent-subtle)] uppercase tracking-wider">New messages</span>
+                  <div className="flex-1 h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {isLoadingMessages && conversationMessages.length === 0 ? (
+          <SkeletonMessageList />
+        ) : (
+          <div className="flex justify-center mb-6">
+            <span className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-surface)]/80 backdrop-blur-sm px-4 py-2 rounded-full flex items-center gap-2 border border-[var(--border)] shadow-sm">
+              <Lock className="w-3 h-3 text-[var(--success)]" /> End-to-end encrypted
+            </span>
+          </div>
+        )}
+
+        {isLoadingOlder && (
+          <div className="flex justify-center py-4" role="status">
+            <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />
+          </div>
+        )}
+
+        <div ref={topSentinelRef} className="h-4 w-full" />
 
         {showScrollBottom && (
           <button onClick={handleScrollToBottom} aria-label="Scroll to latest messages"
-            className="sticky bottom-4 left-1/2 -translate-x-1/2 z-10 w-11 h-11 rounded-full bg-[var(--bg-surface)] border border-[var(--border)] shadow-lg backdrop-blur-sm flex items-center justify-center hover:bg-[var(--hover)] hover:shadow-xl hover:scale-105 active:scale-95 transition-all">
+            className="fixed bottom-24 right-8 z-10 w-11 h-11 rounded-full bg-[var(--bg-surface)] border border-[var(--border)] shadow-lg backdrop-blur-sm flex items-center justify-center hover:bg-[var(--hover)] hover:shadow-xl hover:scale-105 transition-all">
             <ChevronDown className="w-5 h-5 text-[var(--text-secondary)]" />
           </button>
         )}
@@ -742,12 +801,12 @@ export default function ChatArea() {
 
       {/* Reply banner */}
       {replyTo && (
-        <div className="mx-3 px-3 py-2.5 rounded-t-xl bg-[var(--bg-surface)] flex items-center gap-3 border-l-[3px] border-[var(--accent)] border border-b-0 border-[var(--border)] animate-slide-up">
+        <div className="mx-3 px-3 py-2.5 rounded-t-xl bg-[var(--bg-surface)] flex items-center gap-3 border-l-[3px] border-l-[var(--accent)] border border-b-0 border-[var(--border)] animate-slide-up">
           <Reply className="w-4 h-4 text-[var(--accent)] flex-shrink-0 scale-x-[-1]" />
           <div className="flex-1 min-w-0">
             <p className="text-xs font-bold text-[var(--accent)]">{replyTo.sender_display_name || replyTo.sender_username || 'You'}</p>
             <p className="text-xs text-[var(--text-muted)] truncate mt-0.5">
-              {replyTo.content && !isValidEncryptedMessage(replyTo.content) ? replyTo.content : '🔒 Encrypted message'}
+              {replyTo.content && !isEncryptedMessage(replyTo.content) ? replyTo.content : '🔒 Encrypted message'}
             </p>
           </div>
           <button onClick={() => setReplyTo(null)} className="p-1.5 rounded-lg hover:bg-[var(--hover)] transition-colors" aria-label="Cancel reply">
@@ -1133,7 +1192,7 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
   const ReplyPreview = () => repliedMessage ? (
     <div className={cn('mb-2 border-l-[3px] pl-2.5 py-1 rounded-r-md text-xs cursor-pointer hover:opacity-80 transition-opacity', isOwn ? 'border-white/40 bg-white/10' : 'border-[var(--accent)] bg-[var(--accent)]/5')}>
       <p className={cn('font-bold text-[11px]', isOwn ? 'text-white/80' : 'text-[var(--accent)]')}>{repliedMessage.sender_display_name || repliedMessage.sender_username}</p>
-      <p className={cn('truncate text-[11px] mt-0.5', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{repliedMessage.content && !isValidEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted'}</p>
+      <p className={cn('truncate text-[11px] mt-0.5', isOwn ? 'text-white/50' : 'text-[var(--text-muted)]')}>{repliedMessage.content && !isEncryptedMessage(repliedMessage.content) ? repliedMessage.content : '🔒 Encrypted'}</p>
     </div>
   ) : null;
 
@@ -1254,7 +1313,7 @@ function MessageBubble({ message, isOwn, showName, onReply, onContextMenu, onPre
             )}
             <ReplyPreview />
             <div className="leading-relaxed whitespace-pre-wrap break-words">
-              {message.content && !isValidEncryptedMessage(message.content)
+              {message.content && !isEncryptedMessage(message.content)
                 ? (() => {
                   try {
                     const parsed = JSON.parse(message.content.trim());

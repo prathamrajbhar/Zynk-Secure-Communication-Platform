@@ -1,82 +1,162 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useCallHistoryStore, CallLog } from '@/stores/callHistoryStore';
-import { useAuthStore } from '@/stores/authStore';
+/**
+ * CallLogsPanel — Call history list with direction icons, duration, timestamps.
+ */
+
+import { useEffect, useCallback } from 'react';
+import { useCallHistoryStore, CallHistoryEntry } from '@/stores/callHistoryStore';
 import { useCallStore } from '@/stores/callStore';
-import { formatTime, getInitials, cn, getAvatarColor } from '@/lib/utils';
-import { Phone, Video, PhoneIncoming, PhoneOutgoing, PhoneMissed, Loader2 } from 'lucide-react';
+import { getInitials, getAvatarColor, cn } from '@/lib/utils';
+import {
+  Phone, PhoneMissed, Video,
+  ArrowDownLeft, ArrowUpRight, Loader2,
+} from 'lucide-react';
 
-export default function CallLogsPanel() {
-  const { callLogs, isLoading, error, fetchCallHistory } = useCallHistoryStore();
-  const { user } = useAuthStore();
-  const { initiateCall } = useCallStore();
+function formatDuration(seconds: number | null | undefined): string {
+  if (!seconds) return '';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
 
-  useEffect(() => { fetchCallHistory(); }, [fetchCallHistory]);
+function formatTimestamp(ts: string): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const diff = now.getTime() - d.getTime();
+  const dayMs = 86400000;
 
-  const handleCallClick = (log: CallLog) => {
-    const other = log.participants.find(p => p.user_id !== user?.id);
-    if (other) initiateCall(other.user_id, log.call_type, other.display_name || other.username);
-  };
+  if (diff < dayMs && now.getDate() === d.getDate()) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  if (diff < 2 * dayMs) return 'Yesterday';
+  if (diff < 7 * dayMs) {
+    return d.toLocaleDateString([], { weekday: 'short' });
+  }
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
 
-  const formatDuration = (s: number | null) => {
-    if (!s) return '';
-    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  };
-
-  if (isLoading) return <div className="flex items-center justify-center h-full"><Loader2 className="w-6 h-6 animate-spin text-[var(--accent)]" /></div>;
-
-  if (error) return (
-    <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] p-4">
-      <p className="text-sm font-medium text-[var(--text-secondary)]">{error}</p>
-      <button onClick={() => fetchCallHistory()} className="mt-3 text-xs text-[var(--accent)] font-bold hover:underline underline-offset-2">Try again</button>
-    </div>
-  );
-
-  if (callLogs.length === 0) return (
-    <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] p-8">
-      <div className="w-16 h-16 rounded-2xl bg-[var(--bg-wash)] flex items-center justify-center mb-4">
-        <Phone className="w-7 h-7 opacity-40" />
-      </div>
-      <p className="text-sm font-semibold text-[var(--text-secondary)]">No calls yet</p>
-      <p className="text-xs mt-1.5">Your call history will appear here</p>
-    </div>
-  );
+function CallLogItem({ entry, onCall }: { entry: CallHistoryEntry; onCall: (userId: string, userName: string, type: 'audio' | 'video') => void }) {
+  const otherUser = entry.other_user;
+  const name = otherUser?.display_name || otherUser?.username || 'Unknown';
+  const color = getAvatarColor(name);
+  const isMissed = entry.status === 'missed' || entry.status === 'declined';
+  const isOutgoing = entry.direction === 'outgoing';
+  const isVideo = entry.call_type === 'video';
 
   return (
-    <div className="flex-1 overflow-y-auto scroll-thin">
-      {callLogs.map(log => {
-        const isOutgoing = log.initiator_id === user?.id;
-        const isMissed = log.status === 'missed' || log.status === 'declined';
-        const isCompleted = log.status === 'ended';
-        const other = log.participants.find(p => p.user_id !== user?.id);
-        const name = other?.display_name || other?.username || 'Unknown';
-        const CallTypeIcon = log.call_type === 'video' ? Video : Phone;
-        const StatusIcon = isMissed ? PhoneMissed : isOutgoing ? PhoneOutgoing : PhoneIncoming;
+    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--bg-hover)] transition-colors cursor-pointer group">
+      {/* Avatar */}
+      <div className={cn(
+        'w-11 h-11 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0',
+        color
+      )}>
+        {getInitials(name)}
+      </div>
 
-        return (
-          <div key={log.call_id} className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-all duration-200 cursor-pointer group" onClick={() => handleCallClick(log)}>
-            <div className={cn('w-11 h-11 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0 shadow-sm transition-transform duration-200 group-hover:scale-105', getAvatarColor(name))}>
-              {getInitials(name)}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className={cn('text-sm font-semibold truncate', isMissed ? 'text-[var(--danger)]' : 'text-[var(--text-primary)]')}>{name}</span>
-                <span className="text-[11px] text-[var(--text-muted)] flex-shrink-0 font-medium">{formatTime(log.created_at)}</span>
-              </div>
-              <div className="flex items-center gap-1.5 mt-1">
-                <StatusIcon className={cn('w-3.5 h-3.5', isMissed ? 'text-[var(--danger)]' : 'text-[var(--text-muted)]')} />
-                <span className={cn('text-xs font-medium', isMissed ? 'text-[var(--danger)]' : 'text-[var(--text-muted)]')}>
-                  {isMissed ? (log.status === 'declined' ? 'Declined' : 'Missed') : isCompleted ? formatDuration(log.duration_seconds) || 'Ended' : log.status}
-                </span>
-              </div>
-            </div>
-            <button className="btn-icon text-[var(--accent)] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-              <CallTypeIcon className="w-4 h-4" />
-            </button>
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className={cn(
+            'font-semibold text-sm truncate',
+            isMissed ? 'text-red-400' : 'text-[var(--text-primary)]'
+          )}>
+            {name}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          {/* Direction icon */}
+          {isMissed ? (
+            <PhoneMissed className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+          ) : isOutgoing ? (
+            <ArrowUpRight className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+          ) : (
+            <ArrowDownLeft className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+          )}
+          <span className="text-xs text-[var(--text-muted)]">
+            {isVideo ? 'Video' : 'Voice'}
+            {entry.duration_seconds ? ` · ${formatDuration(entry.duration_seconds)}` : ''}
+          </span>
+        </div>
+      </div>
+
+      {/* Time & callback */}
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <span className="text-xs text-[var(--text-muted)]">
+          {formatTimestamp(entry.created_at)}
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (otherUser?.id) onCall(otherUser.id, name, isVideo ? 'video' : 'audio');
+          }}
+          className="opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full hover:bg-[var(--accent)]/10 flex items-center justify-center text-[var(--accent)] transition-all"
+          title={`Call ${name}`}
+        >
+          {isVideo ? <Video className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function CallLogsPanel() {
+  const { calls, isLoading, hasMore, fetchCalls, fetchMoreCalls } = useCallHistoryStore();
+  const { initiateCall } = useCallStore();
+
+  useEffect(() => {
+    fetchCalls();
+  }, [fetchCalls]);
+
+  const handleCall = useCallback((userId: string, userName: string, type: 'audio' | 'video') => {
+    // We need the conversationId — look it up from chat store
+    const chatStore = (window as any).__chatStore || null;
+    // For call logs, we initiate by userId; the server side handles finding/creating conversation
+    initiateCall(userId, userName, undefined, '', type);
+  }, [initiateCall]);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 100 && hasMore && !isLoading) {
+      fetchMoreCalls();
+    }
+  }, [hasMore, isLoading, fetchMoreCalls]);
+
+  if (isLoading && calls.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
+        <Loader2 className="w-6 h-6 animate-spin mb-2" />
+        <span className="text-sm">Loading call history...</span>
+      </div>
+    );
+  }
+
+  if (calls.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] p-8">
+        <Phone className="w-10 h-10 mb-3 opacity-30" />
+        <p className="text-sm font-semibold text-[var(--text-secondary)]">No recent calls</p>
+        <p className="text-xs mt-1.5 text-center">Start a voice or video call from any chat</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-4 py-3 border-b border-[var(--border)]">
+        <h2 className="text-base font-bold text-[var(--text-primary)]">Calls</h2>
+      </div>
+      <div className="flex-1 overflow-y-auto" onScroll={handleScroll}>
+        {calls.map((entry) => (
+          <CallLogItem key={entry.id} entry={entry} onCall={handleCall} />
+        ))}
+        {isLoading && (
+          <div className="flex justify-center py-3">
+            <Loader2 className="w-5 h-5 animate-spin text-[var(--text-muted)]" />
           </div>
-        );
-      })}
+        )}
+      </div>
     </div>
   );
 }

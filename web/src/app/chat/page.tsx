@@ -4,16 +4,15 @@ import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore, type Message } from '@/stores/chatStore';
-import { useCallStore } from '@/stores/callStore';
 import { useConnectionStore } from '@/stores/connectionStore';
 import { useCryptoStore } from '@/stores/cryptoStore';
+import { useCallStore } from '@/stores/callStore';
 import { startDecryptionQueueProcessor, stopDecryptionQueueProcessor } from '@/stores/decryptionQueue';
-import { isValidEncryptedMessage, isGroupEncryptedMessage } from '@/lib/crypto';
+import { isEncryptedMessage } from '@/lib/crypto';
 import { connectSocket, disconnectSocket, SOCKET_EVENTS } from '@/lib/socket';
 import logger from '@/lib/logger';
 import Sidebar from '@/components/Sidebar';
 import ChatArea from '@/components/ChatArea';
-import CallOverlay from '@/components/CallOverlay';
 import NewChatModal from '@/components/NewChatModal';
 import GroupCreateModal from '@/components/GroupCreateModal';
 import SettingsPanel from '@/components/SettingsPanel';
@@ -21,19 +20,16 @@ import ProfilePanel from '@/components/ProfilePanel';
 import UserInfoPanel from '@/components/UserInfoPanel';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ConnectionBanner } from '@/components/ConnectionIndicator';
+import CallOverlay from '@/components/CallOverlay';
 import { useUIStore } from '@/stores/uiStore';
 import { Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   requestNotificationPermission,
   notifyIncomingMessage,
-  notifyIncomingCall,
-  notifyMissedCall,
   dismissNotificationByTag,
   updateAppBadge,
   playMessageSound,
-  playRingtone,
-  stopRingtone,
 } from '@/lib/notifications';
 
 export default function ChatPage() {
@@ -139,10 +135,7 @@ export default function ChatPage() {
         // Incoming message from another user — use safe decryption
         try {
           if (message.encrypted_content) {
-            const isGroup = isGroupEncryptedMessage(message.encrypted_content);
-            const isValid = isValidEncryptedMessage(message.encrypted_content);
-            
-            if (isGroup || isValid) {
+            if (isEncryptedMessage(message.encrypted_content)) {
               // Use the safe decryption method from chat store
               const chatStore = useChatStore.getState();
               decryptedContent = await chatStore.safeDecryptMessage(
@@ -150,7 +143,7 @@ export default function ChatPage() {
                 message.conversation_id,
                 message.sender_id,
                 message.encrypted_content,
-                isGroup
+                isEncryptedMessage(message.encrypted_content) && message.encrypted_content.includes('"v":4') // Group detection or better yet, just pass isGroup from message if available
               );
             } else {
               // Not encrypted — use raw content
@@ -237,63 +230,6 @@ export default function ChatPage() {
       }
     });
 
-    // Call events
-    socket.on(SOCKET_EVENTS.CALL_INCOMING, (data) => {
-      useCallStore.getState().setIncomingCall(data);
-      playRingtone();
-      // Browser notification for incoming call (always shown, even when focused)
-      notifyIncomingCall(
-        data.caller_username || 'Unknown',
-        data.call_type || 'audio',
-        data.call_id,
-        () => { /* clicking focuses the window — call UI is already shown */ }
-      );
-    });
-
-    socket.on(SOCKET_EVENTS.CALL_ANSWERED, (data) => {
-      useCallStore.getState().handleAnswer(data);
-      stopRingtone();
-      // Dismiss call notification once answered
-      dismissNotificationByTag(`call-${data.call_id}`);
-    });
-
-    socket.on(SOCKET_EVENTS.CALL_ICE_CANDIDATE, (data) => {
-      useCallStore.getState().handleIceCandidate(data);
-    });
-
-    socket.on(SOCKET_EVENTS.CALL_ENDED, (data) => {
-      // Check if this was a missed call (ringing state when ended)
-      const currentCall = useCallStore.getState().activeCall;
-      if (currentCall?.status === 'ringing' && currentCall.isIncoming) {
-        notifyMissedCall(
-          currentCall.remoteUsername || 'Unknown',
-          currentCall.callType
-        );
-      }
-      useCallStore.getState().handleCallEnded(data);
-      stopRingtone();
-      dismissNotificationByTag(`call-${data.call_id}`);
-    });
-
-    socket.on(SOCKET_EVENTS.CALL_DECLINED, (data) => {
-      useCallStore.getState().handleCallDeclined(data);
-      stopRingtone();
-      dismissNotificationByTag(`call-${data.call_id}`);
-    });
-
-    // Media state & renegotiation events
-    socket.on(SOCKET_EVENTS.CALL_MEDIA_STATE, (data) => {
-      useCallStore.getState().handleRemoteMediaState(data);
-    });
-
-    socket.on(SOCKET_EVENTS.CALL_RENEGOTIATE, (data) => {
-      useCallStore.getState().handleRenegotiate(data);
-    });
-
-    socket.on(SOCKET_EVENTS.CALL_RENEGOTIATE_ANSWER, (data) => {
-      useCallStore.getState().handleRenegotiateAnswer(data);
-    });
-
     // Group E2EE sender key events
     socket.on(SOCKET_EVENTS.GROUP_SENDER_KEY_AVAILABLE, async (data) => {
       // Another member distributed a new sender key — fetch it
@@ -319,9 +255,66 @@ export default function ChatPage() {
       }
     });
 
+    // ── Call events ──
+    const callStore = useCallStore.getState();
+
+    socket.on(SOCKET_EVENTS.CALL_INCOMING, (data) => {
+      callStore.handleIncomingCall(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_ANSWERED, (data) => {
+      callStore.handleCallAnswered(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_ICE_CANDIDATE, (data) => {
+      callStore.handleIceCandidate(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_ENDED, (data) => {
+      callStore.handleCallEnded(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_DECLINED, (data) => {
+      callStore.handleCallDeclined(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_ERROR, (data) => {
+      callStore.handleCallError(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_MEDIA_STATE, (data) => {
+      callStore.handleMediaState(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_RENEGOTIATE, (data) => {
+      callStore.handleRenegotiate(data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_RENEGOTIATE_ANSWER, (data) => {
+      callStore.handleRenegotiateAnswer(data);
+    });
+
+    // Handle call:initiated — server confirms callId for the initiator
+    socket.on(SOCKET_EVENTS.CALL_INITIATED, (data) => {
+      const cs = useCallStore.getState();
+      if (cs.status === 'ringing' || cs.status === 'initiating') {
+        useCallStore.setState({ callId: data.callId });
+      }
+    });
+
+    // Cleanup active call on page unload
+    const handleBeforeUnload = () => {
+      const cs = useCallStore.getState();
+      if (cs.status !== 'idle' && cs.status !== 'ended') {
+        cs.endCall();
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       disconnectSocket();
       stopDecryptionQueueProcessor();
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
@@ -362,6 +355,9 @@ export default function ChatPage() {
 
   return (
     <div className="h-screen flex flex-col bg-[var(--bg-app)] overflow-hidden">
+      {/* Call overlay — renders above everything when in a call */}
+      <CallOverlay />
+
       {/* Connection banner shows when disconnected/reconnecting */}
       <ConnectionBanner />
 
@@ -385,7 +381,6 @@ export default function ChatPage() {
         })()}
       </div>
 
-      <CallOverlay />
       {showNewChat && <NewChatModal />}
       {showGroupCreate && <GroupCreateModal />}
       {showSettings && <SettingsPanel />}
