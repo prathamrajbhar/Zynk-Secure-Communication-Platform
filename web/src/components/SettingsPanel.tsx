@@ -4,15 +4,16 @@
 
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useUIStore, COLOR_SCHEMES, CHAT_BACKGROUNDS, type ColorScheme, type ChatBubbleStyle, type FontSize, type ChatBackground } from '@/stores/uiStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import {
   Palette, Bell, Shield, Monitor, HardDrive, Info, Moon, Sun,
   Check, ChevronRight, Sparkles, Maximize2, Volume2,
-  Lock, Eye, Trash2, LogOut, X,
+  Lock, Eye, Trash2, LogOut, X, Download, UserX, Smartphone, Laptop, Globe,
 } from 'lucide-react';
+import api from '@/lib/api';
 
 export default function SettingsPanel() {
   const {
@@ -35,6 +36,7 @@ export default function SettingsPanel() {
     { id: 'privacy' as const, icon: Shield, label: 'Privacy' },
     { id: 'devices' as const, icon: Monitor, label: 'Devices' },
     { id: 'storage' as const, icon: HardDrive, label: 'Storage' },
+    { id: 'account' as const, icon: UserX, label: 'Account' },
     { id: 'about' as const, icon: Info, label: 'About' },
   ];
 
@@ -138,6 +140,7 @@ export default function SettingsPanel() {
             {settingsTab === 'privacy' && <PrivacySettings />}
             {settingsTab === 'devices' && <DevicesSettings />}
             {settingsTab === 'storage' && <StorageSettings />}
+            {settingsTab === 'account' && <AccountSettings />}
             {settingsTab === 'about' && <AboutSettings />}
           </div>
         </div>
@@ -284,13 +287,65 @@ function NotificationSettings({
 
 /* ─── Privacy Tab ─── */
 function PrivacySettings() {
+  const [privacy, setPrivacy] = useState<{ last_seen: string; profile_photo: string; about: string }>({
+    last_seen: 'everyone', profile_photo: 'everyone', about: 'everyone',
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchPrivacy = async () => {
+      try {
+        const res = await api.get('/users/me');
+        const p = res.data?.privacy_settings || res.data?.privacy || {};
+        setPrivacy({
+          last_seen: p.last_seen || 'everyone',
+          profile_photo: p.profile_photo || 'everyone',
+          about: p.about || 'everyone',
+        });
+      } catch { /* use defaults */ }
+      setLoading(false);
+    };
+    fetchPrivacy();
+  }, []);
+
+  const updatePrivacy = async (key: string, value: string) => {
+    const updated = { ...privacy, [key]: value };
+    setPrivacy(updated);
+    try {
+      await api.put('/users/me/privacy', updated);
+    } catch { /* revert silently */ }
+  };
+
+  const privacyOptions = ['everyone', 'contacts', 'nobody'];
+
   return (
     <>
       <SettingsSection title="Privacy">
         <div className="space-y-3">
-          <PrivacyRow icon={Eye} label="Last Seen" value="Everyone" />
-          <PrivacyRow icon={Lock} label="Profile Photo" value="Everyone" />
-          <PrivacyRow icon={Info} label="About" value="Everyone" />
+          <PrivacySelect
+            icon={Eye}
+            label="Last Seen"
+            value={privacy.last_seen}
+            options={privacyOptions}
+            onChange={(v) => updatePrivacy('last_seen', v)}
+            loading={loading}
+          />
+          <PrivacySelect
+            icon={Lock}
+            label="Profile Photo"
+            value={privacy.profile_photo}
+            options={privacyOptions}
+            onChange={(v) => updatePrivacy('profile_photo', v)}
+            loading={loading}
+          />
+          <PrivacySelect
+            icon={Info}
+            label="About"
+            value={privacy.about}
+            options={privacyOptions}
+            onChange={(v) => updatePrivacy('about', v)}
+            loading={loading}
+          />
         </div>
       </SettingsSection>
 
@@ -309,36 +364,114 @@ function PrivacySettings() {
   );
 }
 
-function PrivacyRow({ icon: Icon, label, value }: { icon: typeof Eye; label: string; value: string }) {
+function PrivacySelect({ icon: Icon, label, value, options, onChange, loading }: {
+  icon: typeof Eye; label: string; value: string; options: string[];
+  onChange: (v: string) => void; loading?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
   return (
-    <button className="w-full flex items-center justify-between py-2 hover:bg-secondary rounded-lg px-2 -mx-2 transition-colors">
-      <div className="flex items-center gap-2.5">
-        <Icon className="w-4 h-4 text-muted-foreground" />
-        <span className="text-sm text-foreground">{label}</span>
-      </div>
-      <div className="flex items-center gap-1">
-        <span className="text-xs text-muted-foreground">{value}</span>
-        <ChevronRight className="w-4 h-4 text-muted-foreground" />
-      </div>
-    </button>
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between py-2 hover:bg-secondary rounded-lg px-2 -mx-2 transition-colors"
+      >
+        <div className="flex items-center gap-2.5">
+          <Icon className="w-4 h-4 text-muted-foreground" />
+          <span className="text-sm text-foreground">{label}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-muted-foreground capitalize">{loading ? '...' : value}</span>
+          <ChevronRight className={cn('w-4 h-4 text-muted-foreground transition-transform', open && 'rotate-90')} />
+        </div>
+      </button>
+      {open && (
+        <div className="mt-1 ml-7 space-y-0.5 animate-appear">
+          {options.map(opt => (
+            <button
+              key={opt}
+              onClick={() => { onChange(opt); setOpen(false); }}
+              className={cn(
+                'w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-sm transition-colors capitalize',
+                value === opt ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-secondary',
+              )}
+            >
+              <span>{opt}</span>
+              {value === opt && <Check className="w-3.5 h-3.5" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 
 /* ─── Devices Tab ─── */
 function DevicesSettings() {
+  const [devices, setDevices] = useState<{ id: string; device_name?: string; device_type?: string; ip_address?: string; last_active?: string; is_current?: boolean }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchDevices = useCallback(async () => {
+    try {
+      const res = await api.get('/auth/devices');
+      setDevices(res.data.devices || res.data || []);
+    } catch {
+      // Show current device at minimum
+      setDevices([{ id: 'current', device_name: 'Current Device', device_type: 'web', is_current: true }]);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchDevices(); }, [fetchDevices]);
+
+  const removeDevice = async (deviceId: string) => {
+    try {
+      await api.delete(`/auth/devices/${deviceId}`);
+      setDevices(prev => prev.filter(d => d.id !== deviceId));
+    } catch { /* ignore */ }
+  };
+
+  const DeviceIcon = ({ type }: { type?: string }) => {
+    if (type === 'mobile' || type === 'android' || type === 'ios') return <Smartphone className="w-5 h-5 text-primary" />;
+    if (type === 'desktop') return <Laptop className="w-5 h-5 text-primary" />;
+    return <Globe className="w-5 h-5 text-primary" />;
+  };
+
   return (
     <SettingsSection title="Active Devices">
-      <div className="flex items-start gap-3 p-3 rounded-xl bg-secondary border border-border">
-        <Monitor className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-foreground">Current Device</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Web Browser · Active now</p>
+      {loading ? (
+        <div className="animate-pulse space-y-3">
+          {[1, 2].map(i => <div key={i} className="h-16 rounded-xl bg-secondary" />)}
         </div>
-        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-success/10 text-success">
-          Current
-        </span>
-      </div>
+      ) : (
+        <div className="space-y-2">
+          {devices.map(device => (
+            <div key={device.id} className="flex items-start gap-3 p-3 rounded-xl bg-secondary border border-border">
+              <DeviceIcon type={device.device_type} />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground">{device.device_name || 'Unknown Device'}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {device.device_type || 'Web Browser'}
+                  {device.ip_address && ` · ${device.ip_address}`}
+                  {device.is_current ? ' · Active now' : device.last_active ? ` · ${new Date(device.last_active).toLocaleDateString()}` : ''}
+                </p>
+              </div>
+              {device.is_current ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-success/10 text-success flex-shrink-0">
+                  Current
+                </span>
+              ) : (
+                <button
+                  onClick={() => removeDevice(device.id)}
+                  className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors flex-shrink-0"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </SettingsSection>
   );
 }
@@ -346,23 +479,157 @@ function DevicesSettings() {
 
 /* ─── Storage Tab ─── */
 function StorageSettings() {
+  const [cacheSize, setCacheSize] = useState<string>('—');
+
+  useEffect(() => {
+    // Estimate cache size from localStorage
+    try {
+      let size = 0;
+      for (const key in localStorage) {
+        if (key.startsWith('zynk-')) {
+          size += (localStorage.getItem(key) || '').length * 2; // UTF-16
+        }
+      }
+      if (size < 1024) setCacheSize(`${size} B`);
+      else if (size < 1048576) setCacheSize(`${(size / 1024).toFixed(1)} KB`);
+      else setCacheSize(`${(size / 1048576).toFixed(1)} MB`);
+    } catch { setCacheSize('—'); }
+  }, []);
+
+  const clearCache = () => {
+    const keysToKeep = ['session_token', 'refresh_token', 'user', 'theme'];
+    for (const key in localStorage) {
+      if (key.startsWith('zynk-') && !keysToKeep.includes(key)) {
+        localStorage.removeItem(key);
+      }
+    }
+    setCacheSize('0 B');
+  };
+
   return (
     <SettingsSection title="Storage Usage">
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Cached Messages</span>
-          <span className="text-sm font-medium text-foreground">—</span>
+          <span className="text-sm text-muted-foreground">Cached Data</span>
+          <span className="text-sm font-medium text-foreground">{cacheSize}</span>
         </div>
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">Encryption Keys</span>
           <span className="text-sm font-medium text-foreground">Stored locally</span>
         </div>
-        <button className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-destructive bg-destructive/10 rounded-lg hover:bg-destructive/20 transition-colors mt-2">
+        <button
+          onClick={clearCache}
+          className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-destructive bg-destructive/10 rounded-lg hover:bg-destructive/20 transition-colors mt-2"
+        >
           <Trash2 className="w-4 h-4" />
           Clear Cache
         </button>
       </div>
     </SettingsSection>
+  );
+}
+
+
+/* ─── Account Tab ─── */
+function AccountSettings() {
+  const [exporting, setExporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const { logout } = useAuthStore();
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await api.get('/account/export', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `zynk-data-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      alert('Export failed. Please try again later.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.post('/account/delete');
+      await logout();
+    } catch {
+      alert('Account deletion failed. Please try again.');
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  };
+
+  return (
+    <>
+      <SettingsSection title="Data Export">
+        <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+          Download a copy of all your data including messages, contacts, and settings. This is encrypted and only readable by you.
+        </p>
+        <button
+          onClick={handleExport}
+          disabled={exporting}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg transition-colors',
+            'bg-primary/10 text-primary hover:bg-primary/20',
+            exporting && 'opacity-50 cursor-not-allowed',
+          )}
+        >
+          <Download className="w-4 h-4" />
+          {exporting ? 'Exporting...' : 'Export My Data'}
+        </button>
+      </SettingsSection>
+
+      <SettingsSection title="Danger Zone">
+        <div className="p-3 rounded-xl bg-destructive/5 border border-destructive/20 space-y-3">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Permanently delete your account and all associated data. This action cannot be undone.
+          </p>
+          {confirmDelete && (
+            <div className="p-2 rounded-lg bg-destructive/10 border border-destructive/20 animate-appear">
+              <p className="text-xs text-destructive font-semibold">
+                Are you sure? All your messages, contacts, and encryption keys will be permanently deleted.
+              </p>
+            </div>
+          )}
+          <button
+            onClick={handleDeleteAccount}
+            disabled={deleting}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg transition-colors',
+              confirmDelete
+                ? 'bg-destructive text-white hover:bg-destructive/90'
+                : 'bg-destructive/10 text-destructive hover:bg-destructive/20',
+              deleting && 'opacity-50 cursor-not-allowed',
+            )}
+          >
+            <UserX className="w-4 h-4" />
+            {deleting ? 'Deleting...' : confirmDelete ? 'Confirm Delete Forever' : 'Delete My Account'}
+          </button>
+          {confirmDelete && (
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="text-xs text-muted-foreground hover:text-foreground ml-2"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      </SettingsSection>
+    </>
   );
 }
 

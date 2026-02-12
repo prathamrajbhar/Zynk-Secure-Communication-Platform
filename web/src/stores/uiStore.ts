@@ -41,7 +41,7 @@ interface UIState {
   showGroupCreate: boolean;
   showProfile: boolean;
   showUserInfo: boolean;
-  settingsTab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'about';
+  settingsTab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'account' | 'about';
 
   // New feature state
   chatBackground: ChatBackground;
@@ -64,7 +64,7 @@ interface UIState {
   setShowGroupCreate: (show: boolean) => void;
   setShowProfile: (show: boolean) => void;
   setShowUserInfo: (show: boolean) => void;
-  setSettingsTab: (tab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'about') => void;
+  setSettingsTab: (tab: 'appearance' | 'notifications' | 'privacy' | 'devices' | 'storage' | 'account' | 'about') => void;
   setChatBackground: (bg: ChatBackground) => void;
   setSidebarFilter: (filter: SidebarFilter) => void;
   setMessageSoundEnabled: (enabled: boolean) => void;
@@ -77,6 +77,16 @@ function applyTheme(theme: string, scheme: string) {
   if (typeof document === 'undefined') return;
   document.documentElement.classList.toggle('dark', theme === 'dark');
   document.documentElement.setAttribute('data-theme', scheme);
+}
+
+function applyFontSize(size: string) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.setAttribute('data-font-size', size);
+}
+
+function applyCompactMode(compact: boolean) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.setAttribute('data-compact', String(compact));
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -124,11 +134,13 @@ export const useUIStore = create<UIState>((set) => ({
 
   setFontSize: (size) => {
     set({ fontSize: size });
+    applyFontSize(size);
     localStorage.setItem('zynk-font-size', size);
   },
 
   setCompactMode: (compact) => {
     set({ compactMode: compact });
+    applyCompactMode(compact);
     localStorage.setItem('zynk-compact-mode', String(compact));
   },
 
@@ -181,6 +193,8 @@ export const useUIStore = create<UIState>((set) => ({
     const callSoundEnabled = localStorage.getItem('zynk-call-sound') !== 'false';
     const notifSoundEnabled = localStorage.getItem('zynk-notif-sound') !== 'false';
     applyTheme(theme, colorScheme);
+    applyFontSize(fontSize);
+    applyCompactMode(compactMode);
     set({ theme, colorScheme, bubbleStyle, fontSize, compactMode, animationsEnabled, chatBackground, messageSoundEnabled, callSoundEnabled, notifSoundEnabled });
   },
 }));

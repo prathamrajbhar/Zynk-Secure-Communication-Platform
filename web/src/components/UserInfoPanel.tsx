@@ -4,7 +4,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
 import { cn, formatTime } from '@/lib/utils';
@@ -36,7 +36,8 @@ interface UserProfile {
 export default function UserInfoPanel({ userId, conversationId, onClose }: UserInfoPanelProps) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const { toggleMuteChat, togglePinChat, mutedChats, pinnedChats, deleteConversation, clearChatHistory } = useChatStore();
+  const [mediaCounts, setMediaCounts] = useState<{ photos: number; documents: number; links: number }>({ photos: 0, documents: 0, links: 0 });
+  const { toggleMuteChat, togglePinChat, toggleArchiveChat, mutedChats, pinnedChats, deleteConversation, clearChatHistory, starredMessages } = useChatStore();
   const { initiateCall } = useCallStore();
 
   const isMuted = mutedChats.has(conversationId);
@@ -66,6 +67,29 @@ export default function UserInfoPanel({ userId, conversationId, onClose }: UserI
     };
     fetchProfile();
   }, [userId, conversationId]);
+
+  // Fetch media counts
+  useEffect(() => {
+    const fetchMediaCounts = async () => {
+      try {
+        const res = await api.get(`/files/conversation/${conversationId}`);
+        const files = res.data.files || res.data || [];
+        let photos = 0, documents = 0;
+        files.forEach((f: { mime_type?: string }) => {
+          if (f.mime_type?.startsWith('image/') || f.mime_type?.startsWith('video/')) photos++;
+          else documents++;
+        });
+        setMediaCounts({ photos, documents, links: 0 });
+      } catch { /* leave defaults */ }
+    };
+    fetchMediaCounts();
+  }, [conversationId]);
+
+  // Count starred messages in this conversation
+  const starredCount = useMemo(() => {
+    const convMsgs = useChatStore.getState().messages[conversationId] || [];
+    return convMsgs.filter(m => starredMessages.has(m.id)).length;
+  }, [conversationId, starredMessages]);
 
   const name = profile?.display_name || profile?.username || 'User';
 
@@ -166,10 +190,10 @@ export default function UserInfoPanel({ userId, conversationId, onClose }: UserI
 
         {/* Media, Files, Links */}
         <div className="px-4 py-3 space-y-1">
-          <MediaRow icon={Image} label="Photos & Videos" count="—" />
-          <MediaRow icon={File} label="Documents" count="—" />
-          <MediaRow icon={Link} label="Links" count="—" />
-          <MediaRow icon={Star} label="Starred Messages" count="—" />
+          <MediaRow icon={Image} label="Photos & Videos" count={mediaCounts.photos > 0 ? String(mediaCounts.photos) : '0'} />
+          <MediaRow icon={File} label="Documents" count={mediaCounts.documents > 0 ? String(mediaCounts.documents) : '0'} />
+          <MediaRow icon={Link} label="Links" count={String(mediaCounts.links)} />
+          <MediaRow icon={Star} label="Starred Messages" count={String(starredCount)} />
         </div>
 
         <div className="h-px bg-border mx-4" />
@@ -177,7 +201,7 @@ export default function UserInfoPanel({ userId, conversationId, onClose }: UserI
         {/* Chat actions */}
         <div className="px-4 py-3 space-y-1">
           <ActionRow icon={Pin} label={isPinned ? 'Unpin Chat' : 'Pin Chat'} onClick={() => togglePinChat(conversationId)} />
-          <ActionRow icon={Archive} label="Archive Chat" onClick={() => {}} />
+          <ActionRow icon={Archive} label="Archive Chat" onClick={() => toggleArchiveChat(conversationId)} />
           <ActionRow icon={Trash2} label="Clear History" onClick={() => clearChatHistory(conversationId)} danger />
           <ActionRow icon={Trash2} label="Delete Chat" onClick={() => deleteConversation(conversationId)} danger />
         </div>

@@ -16,6 +16,7 @@ import {
   MoreVertical, Edit3, Archive, Pin, BellOff, Shield, LogOut,
   PhoneIncoming, PhoneOutgoing, Video, Lock,
 } from 'lucide-react';
+import api from '@/lib/api';
 
 export default function Sidebar() {
   const { conversations, activeConversation, setActiveConversation, isLoadingConversations,
@@ -347,15 +348,7 @@ export default function Sidebar() {
           )}
 
           {sidebarTab === 'calls' && <CallsTab />}
-          {sidebarTab === 'contacts' && (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
-                <Users className="w-7 h-7 text-primary" />
-              </div>
-              <p className="text-sm font-semibold text-foreground mb-1">Contacts</p>
-              <p className="text-xs text-muted-foreground">Your contacts from conversations</p>
-            </div>
-          )}
+          {sidebarTab === 'contacts' && <ContactsTab onStartConversation={handleConversationClick} />}
         </div>
       </div>
     </aside>
@@ -435,6 +428,116 @@ function ConversationItem({
         </div>
       </div>
     </button>
+  );
+}
+
+
+/* ─── Contacts Tab ─── */
+function ContactsTab({ onStartConversation }: { onStartConversation: (convId: string) => void }) {
+  const [contacts, setContacts] = useState<{ id: string; user_id: string; username: string; display_name?: string; avatar_url?: string; nickname?: string; is_online?: boolean }[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const { startConversation } = useChatStore();
+
+  useEffect(() => {
+    const fetchContacts = async () => {
+      setIsLoading(true);
+      try {
+        const res = await api.get('/users/contacts/list');
+        setContacts(res.data.contacts || res.data || []);
+      } catch {
+        // Fallback: derive contacts from conversations
+        const convs = useChatStore.getState().conversations;
+        const derived = convs
+          .filter(c => c.type === 'one_to_one' && c.other_user)
+          .map(c => ({
+            id: c.other_user!.user_id,
+            user_id: c.other_user!.user_id,
+            username: c.other_user!.username,
+            display_name: c.other_user!.display_name,
+            avatar_url: c.other_user!.avatar_url,
+            is_online: c.is_online,
+          }));
+        setContacts(derived);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchContacts();
+  }, []);
+
+  const filtered = contacts.filter(c => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (c.display_name || c.username).toLowerCase().includes(q);
+  });
+
+  const handleContactClick = async (userId: string) => {
+    try {
+      const convId = await startConversation(userId);
+      onStartConversation(convId);
+    } catch {
+      console.error('Failed to start conversation with contact');
+    }
+  };
+
+  if (isLoading) return <ConversationListSkeleton />;
+
+  if (contacts.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+          <Users className="w-7 h-7 text-primary" />
+        </div>
+        <p className="text-sm font-semibold text-foreground mb-1">No contacts yet</p>
+        <p className="text-xs text-muted-foreground">Start chatting to build your contact list</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {contacts.length > 5 && (
+        <div className="px-4 py-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search contacts..."
+              className="w-full h-8 pl-9 pr-3 bg-secondary border-0 rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+          </div>
+        </div>
+      )}
+      <div className="px-4 py-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {filtered.length} contact{filtered.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+      {filtered.map(contact => (
+        <button
+          key={contact.id || contact.user_id}
+          onClick={() => handleContactClick(contact.user_id)}
+          className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-accent/50 transition-colors"
+        >
+          <ZAvatar
+            name={contact.display_name || contact.username}
+            src={contact.avatar_url}
+            size="sm"
+            isOnline={contact.is_online}
+            showStatus
+          />
+          <div className="flex-1 min-w-0 text-left">
+            <p className="text-sm font-semibold text-foreground truncate">{contact.display_name || contact.username}</p>
+            <p className="text-xs text-muted-foreground truncate">@{contact.username}</p>
+          </div>
+          {contact.is_online && (
+            <span className="w-2 h-2 rounded-full bg-success flex-shrink-0" />
+          )}
+        </button>
+      ))}
+    </div>
   );
 }
 
