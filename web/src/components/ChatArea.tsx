@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════
-// ZYNK UI — Chat Area (HeroUI v7)
-// Full chat view: header, messages, input
+// ZYNK UI — Chat Area (Discord-style)
 // ═══════════════════════════════════════════════════════
 
 'use client';
@@ -12,10 +11,6 @@ import { useUIStore } from '@/stores/uiStore';
 import { useCallStore } from '@/stores/callStore';
 import { Avatar, MessagesSkeleton } from '@/components/ui';
 import { cn, formatMessageTime, formatTime } from '@/lib/utils';
-import {
-  Button, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem,
-  Chip, Tooltip,
-} from '@heroui/react';
 import {
   ArrowLeft, Phone, Video, Info,
   Send, Paperclip, Smile, Mic, Image as ImageIcon, File, X, Camera,
@@ -30,7 +25,7 @@ export default function ChatArea() {
     isLoadingMessages, sendMessageOptimistic, sendTyping, markConversationRead,
     fetchMessages, fetchOlderMessages, hasMoreMessages, drafts, setDraft } = useChatStore();
   const user = useAuthStore((s) => s.user);
-  const { chatBackground, bubbleStyle, setShowUserInfo, setSidebarOpen } = useUIStore();
+  const { chatBackground, setShowUserInfo, setSidebarOpen } = useUIStore();
   const { initiateCall } = useCallStore();
 
   const conversation = conversations.find((c) => c.id === activeConversation);
@@ -102,16 +97,17 @@ export default function ChatArea() {
   // No conversation selected
   if (!activeConversation || !conversation) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-background">
-        <div className="text-center animate-appear">
-          <div className="w-20 h-20 rounded-3xl bg-primary/10 flex items-center justify-center mx-auto mb-6">
-            <MessageCircle className="w-10 h-10 text-primary" />
+      <div className="flex-1 flex items-center justify-center bg-background relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-primary/5 pointer-events-none" />
+        <div className="text-center animate-appear relative z-10">
+          <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center mx-auto mb-6 shadow-lg shadow-primary/20">
+            <MessageCircle className="w-10 h-10 text-white" />
           </div>
           <h2 className="text-xl font-bold text-foreground mb-2">Welcome to Zynk</h2>
-          <p className="text-sm text-default-400 max-w-xs mx-auto leading-relaxed">
+          <p className="text-sm text-muted-foreground max-w-xs mx-auto leading-relaxed">
             Select a conversation or start a new chat to begin messaging securely.
           </p>
-          <div className="flex items-center justify-center gap-1.5 mt-6 text-xs text-default-400">
+          <div className="flex items-center justify-center gap-1.5 mt-6 text-xs text-muted-foreground">
             <Lock className="w-3.5 h-3.5" />
             <span>End-to-end encrypted</span>
           </div>
@@ -144,15 +140,14 @@ export default function ChatArea() {
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full">
       {/* ─── Chat Header ─── */}
-      <div className="flex items-center gap-3 px-4 py-2.5 flex-shrink-0 bg-content1 border-b border-divider">
-        <Button
-          isIconOnly variant="light" size="sm" radius="full"
-          onPress={() => { useChatStore.getState().setActiveConversation(null); setSidebarOpen(true); }}
-          className="lg:hidden"
+      <div className="flex items-center gap-3 px-4 py-2.5 flex-shrink-0 bg-card/80 backdrop-blur-xl border-b border-border z-10">
+        <button
+          onClick={() => { useChatStore.getState().setActiveConversation(null); setSidebarOpen(true); }}
+          className="lg:hidden w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
           aria-label="Back"
         >
           <ArrowLeft className="w-5 h-5" />
-        </Button>
+        </button>
 
         <button
           onClick={() => conversation.type === 'one_to_one' && setShowUserInfo(true)}
@@ -164,7 +159,7 @@ export default function ChatArea() {
             <h2 className="text-sm font-bold text-foreground truncate group-hover:text-primary transition-colors">
               {name}
             </h2>
-            <p className="text-xs text-default-400 truncate">
+            <p className="text-xs text-muted-foreground truncate">
               {isTyping ? (
                 <span className="text-primary font-medium">typing...</span>
               ) : isOnline ? (
@@ -183,22 +178,29 @@ export default function ChatArea() {
         <div className="flex items-center gap-1">
           {conversation.type === 'one_to_one' && (
             <>
-              <Tooltip content="Voice call">
-                <Button isIconOnly variant="light" size="sm" radius="full" onPress={() => handleCall('audio')} aria-label="Voice call" color="primary">
-                  <Phone className="w-4.5 h-4.5" />
-                </Button>
-              </Tooltip>
-              <Tooltip content="Video call">
-                <Button isIconOnly variant="light" size="sm" radius="full" onPress={() => handleCall('video')} aria-label="Video call" color="primary">
-                  <Video className="w-4.5 h-4.5" />
-                </Button>
-              </Tooltip>
+              <button
+                onClick={() => handleCall('audio')}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-primary transition-colors"
+                aria-label="Voice call"
+              >
+                <Phone className="w-[18px] h-[18px]" />
+              </button>
+              <button
+                onClick={() => handleCall('video')}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-primary transition-colors"
+                aria-label="Video call"
+              >
+                <Video className="w-[18px] h-[18px]" />
+              </button>
             </>
           )}
-          <Button isIconOnly variant="light" size="sm" radius="full"
-            onPress={() => conversation.type === 'one_to_one' && setShowUserInfo(true)} aria-label="Info">
-            <Info className="w-4.5 h-4.5 text-default-500" />
-          </Button>
+          <button
+            onClick={() => conversation.type === 'one_to_one' && setShowUserInfo(true)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            aria-label="Info"
+          >
+            <Info className="w-[18px] h-[18px]" />
+          </button>
         </div>
       </div>
 
@@ -208,23 +210,22 @@ export default function ChatArea() {
         onScroll={handleScroll}
         className={cn('flex-1 overflow-y-auto overflow-x-hidden relative bg-background', bgClass)}
       >
-        <div className="max-w-chat mx-auto px-4 py-4 space-y-1 relative z-10">
-          {/* E2EE notice */}
-          <div className="flex items-center justify-center py-3">
-            <Chip variant="flat" color="primary" size="sm" startContent={<Lock className="w-3 h-3" />}>
-              Messages are end-to-end encrypted
-            </Chip>
+        <div className="max-w-3xl mx-auto px-4 py-4 space-y-1 relative z-10">
+          {/* E2EE banner */}
+          <div className="flex items-center justify-center gap-2 py-2 mb-2 rounded-xl bg-primary/5 border border-primary/10">
+            <Lock className="w-3.5 h-3.5 text-primary" />
+            <span className="text-xs font-medium text-muted-foreground">Messages are end-to-end encrypted</span>
           </div>
 
           {isLoadingMessages ? (
-            <MessagesSkeleton count={8} />
+            <MessagesSkeleton />
           ) : (
             groupedMessages.map((group) => (
               <div key={group.date}>
                 <div className="flex items-center justify-center py-3">
-                  <Chip variant="flat" size="sm" classNames={{ base: 'bg-content2', content: 'text-default-500 text-xs' }}>
+                  <span className="px-3 py-1 rounded-full bg-secondary text-muted-foreground text-xs font-medium border border-border">
                     {group.date}
-                  </Chip>
+                  </span>
                 </div>
 
                 {group.messages.map((msg, i) => {
@@ -243,7 +244,6 @@ export default function ChatArea() {
                       showAvatar={showAvatar}
                       showName={showName}
                       isConsecutive={isConsecutive}
-                      bubbleStyle={bubbleStyle}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         setContextMenu({ x: e.clientX, y: e.clientY, message: msg });
@@ -259,7 +259,7 @@ export default function ChatArea() {
           {isTyping && (
             <div className="flex items-end gap-2 animate-appear">
               <Avatar name={name} src={avatar} size="xs" />
-              <div className="bubble-received px-4 py-2.5 rounded-2xl rounded-bl-md bg-content2 flex items-center gap-1">
+              <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-secondary flex items-center gap-1.5">
                 <span className="typing-dot" />
                 <span className="typing-dot" />
                 <span className="typing-dot" />
@@ -272,14 +272,13 @@ export default function ChatArea() {
 
         {/* Scroll to bottom */}
         {showScrollButton && (
-          <Button
-            isIconOnly variant="flat" size="sm" radius="full"
-            onPress={scrollToBottom}
-            className="absolute bottom-4 right-4 shadow-lg z-10 bg-content1 border border-divider"
+          <button
+            onClick={scrollToBottom}
+            className="absolute bottom-4 right-4 w-9 h-9 rounded-full shadow-lg z-10 bg-card border border-border flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
             aria-label="Scroll to bottom"
           >
-            <ChevronDown className="w-4.5 h-4.5" />
-          </Button>
+            <ChevronDown className="w-[18px] h-[18px]" />
+          </button>
         )}
       </div>
 
@@ -309,21 +308,10 @@ export default function ChatArea() {
 
 /* ─── Message Bubble ─── */
 function MessageBubble({
-  message: msg,
-  isMine,
-  isGroup,
-  showAvatar,
-  showName,
-  isConsecutive,
-  onContextMenu,
+  message: msg, isMine, isGroup, showAvatar, showName, isConsecutive, onContextMenu,
 }: {
-  message: Message;
-  isMine: boolean;
-  isGroup: boolean;
-  showAvatar: boolean;
-  showName: boolean;
-  isConsecutive: boolean;
-  bubbleStyle?: string;
+  message: Message; isMine: boolean; isGroup: boolean;
+  showAvatar: boolean; showName: boolean; isConsecutive: boolean;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const content = msg.content || msg.encrypted_content || '';
@@ -334,9 +322,7 @@ function MessageBubble({
   if (isSystem) {
     return (
       <div className="flex justify-center py-1">
-        <Chip variant="flat" size="sm" classNames={{ base: 'bg-content2', content: 'text-default-400 text-xs' }}>
-          {content}
-        </Chip>
+        <span className="px-3 py-1 rounded-full bg-secondary text-muted-foreground text-xs">{content}</span>
       </div>
     );
   }
@@ -347,12 +333,12 @@ function MessageBubble({
   }
 
   const statusIcon = isMine ? (
-    msg.isOptimistic ? <Clock className="w-3 h-3 text-default-400" /> :
+    msg.isOptimistic ? <Clock className="w-3 h-3 text-muted-foreground" /> :
     msg.status === 'read' ? <CheckCheck className="w-3 h-3 text-primary" /> :
-    msg.status === 'delivered' ? <CheckCheck className="w-3 h-3 text-default-400" /> :
-    msg.status === 'sent' ? <Check className="w-3 h-3 text-default-400" /> :
-    msg.status === 'failed' ? <AlertCircle className="w-3 h-3 text-danger" /> :
-    <Clock className="w-3 h-3 text-default-400" />
+    msg.status === 'delivered' ? <CheckCheck className="w-3 h-3 text-muted-foreground" /> :
+    msg.status === 'sent' ? <Check className="w-3 h-3 text-muted-foreground" /> :
+    msg.status === 'failed' ? <AlertCircle className="w-3 h-3 text-destructive" /> :
+    <Clock className="w-3 h-3 text-muted-foreground" />
   ) : null;
 
   return (
@@ -375,7 +361,7 @@ function MessageBubble({
 
       <div className={cn('max-w-[70%] sm:max-w-[65%] relative')}>
         {showName && (
-          <p className="text-2xs font-semibold text-primary ml-1 mb-0.5">
+          <p className="text-[11px] font-semibold text-primary ml-1 mb-0.5">
             {msg.sender_display_name || msg.sender_username}
           </p>
         )}
@@ -383,8 +369,8 @@ function MessageBubble({
         <div className={cn(
           'px-3 py-2 relative rounded-2xl',
           isMine
-            ? 'bg-primary text-primary-foreground rounded-br-md'
-            : 'bg-content2 text-foreground rounded-bl-md',
+            ? 'bg-chat-sent text-chat-sent-foreground rounded-br-md'
+            : 'bg-chat-received text-foreground rounded-bl-md',
         )}>
           {/* Image message */}
           {isImage && fileData?.url && (
@@ -406,19 +392,19 @@ function MessageBubble({
               rel="noopener noreferrer"
               className={cn(
                 'flex items-center gap-2.5 p-2 -mx-1 rounded-lg transition-colors',
-                isMine ? 'bg-white/10 hover:bg-white/20' : 'bg-content3 hover:bg-default-200',
+                isMine ? 'bg-white/10 hover:bg-white/20' : 'bg-accent hover:bg-accent/80',
               )}
             >
               <div className={cn(
                 'w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0',
                 isMine ? 'bg-white/20' : 'bg-primary/10',
               )}>
-                <File className={cn('w-5 h-5', isMine ? 'text-primary-foreground' : 'text-primary')} />
+                <File className={cn('w-5 h-5', isMine ? 'text-white' : 'text-primary')} />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium truncate">{fileData.filename}</p>
                 {fileData.size && (
-                  <p className={cn('text-2xs', isMine ? 'text-primary-foreground/60' : 'text-default-400')}>
+                  <p className={cn('text-[11px]', isMine ? 'text-white/60' : 'text-muted-foreground')}>
                     {formatFileSize(fileData.size)}
                   </p>
                 )}
@@ -430,7 +416,7 @@ function MessageBubble({
           {!isImage && !isFile && (
             <p className="text-[0.9375rem] leading-relaxed whitespace-pre-wrap break-words">
               {isEncryptedPlaceholder(content) ? (
-                <span className={cn('italic flex items-center gap-1', isMine ? 'text-primary-foreground/60' : 'text-default-400')}>
+                <span className={cn('italic flex items-center gap-1', isMine ? 'text-white/60' : 'text-muted-foreground')}>
                   <Lock className="w-3 h-3" /> Encrypted message
                 </span>
               ) : (
@@ -441,26 +427,26 @@ function MessageBubble({
 
           {/* Timestamp + status */}
           <div className={cn('flex items-center gap-1 mt-1', isMine ? 'justify-end' : 'justify-start')}>
-            <span className={cn('text-[10px] tabular-nums', isMine ? 'text-primary-foreground/60' : 'text-default-400')}>
+            <span className={cn('text-[10px] tabular-nums', isMine ? 'text-white/60' : 'text-muted-foreground')}>
               {formatMessageTime(msg.created_at)}
             </span>
-            {msg.edited_at && <span className={cn('text-[10px]', isMine ? 'text-primary-foreground/60' : 'text-default-400')}>edited</span>}
+            {msg.edited_at && <span className={cn('text-[10px]', isMine ? 'text-white/60' : 'text-muted-foreground')}>edited</span>}
             {statusIcon}
           </div>
         </div>
 
         {/* Hover actions */}
         <div className={cn(
-          'absolute top-0 flex items-center gap-0.5 bg-content1 rounded-lg shadow-md border border-divider p-0.5',
+          'absolute top-0 flex items-center gap-0.5 bg-card rounded-lg shadow-md border border-border p-0.5',
           'opacity-0 group-hover:opacity-100 transition-opacity',
           isMine ? '-left-2 -translate-x-full' : '-right-2 translate-x-full',
         )}>
-          <Button isIconOnly variant="light" size="sm" radius="sm" className="w-7 h-7 min-w-0" aria-label="Reply">
+          <button className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors" aria-label="Reply">
             <Reply className="w-3.5 h-3.5" />
-          </Button>
-          <Button isIconOnly variant="light" size="sm" radius="sm" className="w-7 h-7 min-w-0" aria-label="React">
+          </button>
+          <button className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors" aria-label="React">
             <Smile className="w-3.5 h-3.5" />
-          </Button>
+          </button>
         </div>
       </div>
     </div>
@@ -470,17 +456,10 @@ function MessageBubble({
 
 /* ─── Chat Input ─── */
 function ChatInput({
-  conversationId,
-  draft,
-  onDraftChange,
-  onSend,
-  onTyping,
+  conversationId, draft, onDraftChange, onSend, onTyping,
 }: {
-  conversationId: string;
-  draft: string;
-  onDraftChange: (text: string) => void;
-  onSend: (text: string) => void;
-  onTyping: (isTyping: boolean) => void;
+  conversationId: string; draft: string; onDraftChange: (text: string) => void;
+  onSend: (text: string) => void; onTyping: (isTyping: boolean) => void;
 }) {
   const [text, setText] = useState(draft);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -488,6 +467,7 @@ function ChatInput({
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setText(draft); }, [conversationId, draft]);
 
@@ -498,6 +478,16 @@ function ChatInput({
       el.style.height = Math.min(el.scrollHeight, 160) + 'px';
     }
   }, [text]);
+
+  // Close attach menu on outside click
+  useEffect(() => {
+    if (!showAttachMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) setShowAttachMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showAttachMenu]);
 
   const handleChange = (value: string) => {
     setText(value);
@@ -525,8 +515,7 @@ function ChatInput({
     }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleFileUpload = async (files: FileList | null, _type?: 'file' | 'image') => {
+  const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setShowAttachMenu(false);
     for (const file of Array.from(files)) {
@@ -544,26 +533,39 @@ function ChatInput({
   };
 
   return (
-    <div className="flex items-end gap-2 px-4 py-3 bg-content1 border-t border-divider relative">
+    <div className="flex items-end gap-2 px-4 py-3 bg-card/80 backdrop-blur-xl border-t border-border relative">
       {/* Attachment */}
-      <Dropdown placement="top-start" isOpen={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DropdownTrigger>
-          <Button isIconOnly variant="light" size="sm" radius="full" aria-label="Attach">
-            {showAttachMenu ? <X className="w-5 h-5" /> : <Paperclip className="w-5 h-5 text-default-500" />}
-          </Button>
-        </DropdownTrigger>
-        <DropdownMenu aria-label="Attach options" onAction={(key) => {
-          if (key === 'photo') imageInputRef.current?.click();
-          if (key === 'document') fileInputRef.current?.click();
-        }}>
-          <DropdownItem key="photo" startContent={<ImageIcon className="w-4 h-4 text-primary" />}>Photo</DropdownItem>
-          <DropdownItem key="camera" startContent={<Camera className="w-4 h-4 text-success" />}>Camera</DropdownItem>
-          <DropdownItem key="document" startContent={<File className="w-4 h-4 text-warning" />}>Document</DropdownItem>
-        </DropdownMenu>
-      </Dropdown>
+      <div className="relative" ref={attachMenuRef}>
+        <button
+          onClick={() => setShowAttachMenu(!showAttachMenu)}
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          aria-label="Attach"
+        >
+          {showAttachMenu ? <X className="w-5 h-5" /> : <Paperclip className="w-5 h-5" />}
+        </button>
+        {showAttachMenu && (
+          <div className="absolute bottom-full left-0 mb-2 w-44 bg-card border border-border rounded-xl shadow-lg py-1 z-50 animate-appear">
+            <button
+              onClick={() => { imageInputRef.current?.click(); }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+            >
+              <ImageIcon className="w-4 h-4 text-primary" /> Photo
+            </button>
+            <button className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-accent transition-colors">
+              <Camera className="w-4 h-4 text-success" /> Camera
+            </button>
+            <button
+              onClick={() => { fileInputRef.current?.click(); }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+            >
+              <File className="w-4 h-4 text-warning" /> Document
+            </button>
+          </div>
+        )}
+      </div>
 
-      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => handleFileUpload(e.target.files, 'file')} />
-      <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e.target.files, 'image')} />
+      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => handleFileUpload(e.target.files)} />
+      <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e.target.files)} />
 
       {/* Text input */}
       <div className="flex-1 relative">
@@ -574,28 +576,27 @@ function ChatInput({
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           rows={1}
-          className="w-full px-4 py-2.5 bg-content2 rounded-2xl text-sm text-foreground placeholder:text-default-400 resize-none outline-none transition-all focus:ring-2 focus:ring-primary/30 focus:bg-content3 max-h-40 leading-relaxed border border-transparent focus:border-primary/20"
+          className="w-full px-4 py-2.5 bg-secondary rounded-2xl text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none transition-all focus:ring-2 focus:ring-primary/30 focus:bg-accent max-h-40 leading-relaxed border border-transparent focus:border-primary/20"
           aria-label="Message input"
         />
       </div>
 
-      <Button isIconOnly variant="light" size="sm" radius="full" aria-label="Emoji">
-        <Smile className="w-5 h-5 text-default-500" />
-      </Button>
+      <button className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors" aria-label="Emoji">
+        <Smile className="w-5 h-5" />
+      </button>
 
       {text.trim() ? (
-        <Button
-          isIconOnly color="primary" size="sm" radius="full"
-          onPress={handleSend}
-          className="shadow-lg shadow-primary/20 animate-appear"
+        <button
+          onClick={handleSend}
+          className="w-9 h-9 rounded-full bg-primary text-white flex items-center justify-center shadow-lg shadow-primary/20 hover:bg-primary/90 transition-colors animate-appear"
           aria-label="Send message"
         >
           <Send className="w-4 h-4" />
-        </Button>
+        </button>
       ) : (
-        <Button isIconOnly variant="light" size="sm" radius="full" aria-label="Voice message">
-          <Mic className="w-5 h-5 text-default-500" />
-        </Button>
+        <button className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors" aria-label="Voice message">
+          <Mic className="w-5 h-5" />
+        </button>
       )}
     </div>
   );
@@ -621,7 +622,7 @@ function MessageContextMenu({
   return (
     <div
       style={style}
-      className="bg-content1 rounded-xl border border-divider shadow-lg py-1.5 w-48 animate-appear"
+      className="bg-card/95 backdrop-blur-xl rounded-xl border border-border shadow-xl py-1.5 w-48 animate-appear"
       onClick={(e) => e.stopPropagation()}
     >
       <ContextMenuItem icon={Reply} label="Reply" onClick={() => { onClose(); }} />
@@ -630,7 +631,7 @@ function MessageContextMenu({
       <ContextMenuItem icon={Star} label={isStarred ? 'Unstar' : 'Star'} onClick={() => { toggleStarMessage(message.id); onClose(); }} />
       {isMine && (
         <>
-          <div className="h-px bg-divider my-1" />
+          <div className="h-px bg-border my-1" />
           <ContextMenuItem icon={Edit3} label="Edit" onClick={() => { onClose(); }} />
           <ContextMenuItem icon={Trash2} label="Delete" onClick={() => { onClose(); }} danger />
         </>
@@ -648,8 +649,8 @@ function ContextMenuItem({ icon: Icon, label, onClick, danger }: {
       className={cn(
         'w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors',
         danger
-          ? 'text-danger hover:bg-danger/10'
-          : 'text-default-600 hover:bg-content2 hover:text-foreground',
+          ? 'text-destructive hover:bg-destructive/10'
+          : 'text-foreground hover:bg-accent',
       )}
     >
       <Icon className="w-4 h-4" />

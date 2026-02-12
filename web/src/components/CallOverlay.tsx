@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════
-// ZYNK UI — Call Overlay (HeroUI Redesign)
+// ZYNK UI — Call Overlay (Discord-style)
 // Full-screen overlay for voice/video calls with PiP
 // ═══════════════════════════════════════════════════════
 
@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useCallStore } from '@/stores/callStore';
-import { Avatar, Button, Chip } from '@heroui/react';
+import { ZAvatar } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import {
   Phone, PhoneOff, Mic, MicOff, Video, VideoOff,
@@ -70,40 +70,38 @@ export default function CallOverlay() {
   if (isMinimized && isConnected) {
     return (
       <div
-        className="fixed bottom-20 right-4 z-[60] w-44 h-60 rounded-2xl overflow-hidden shadow-2xl border-2 border-default-200 bg-black cursor-pointer animate-scale-in"
+        className="fixed bottom-20 right-4 z-[60] w-44 h-60 rounded-2xl overflow-hidden shadow-2xl border-2 border-border bg-black cursor-pointer animate-appear"
         onClick={() => setIsMinimized(false)}
       >
         {isVideo && remoteStream ? (
           <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full bg-gradient-to-b from-[#1a1a2e] to-[#0a0a18] flex flex-col items-center justify-center gap-2">
-            <Avatar name={remoteName} size="lg" className="ring-2 ring-primary/40" />
+            <ZAvatar name={remoteName} size="lg" />
             <span className="text-white text-xs font-medium">{remoteName}</span>
             <span className="text-white/60 text-[10px] tabular-nums">{timer}</span>
           </div>
         )}
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2">
-          <Button
-            isIconOnly size="sm" radius="full" variant="flat"
-            className="bg-black/60 text-white min-w-8 w-8 h-8"
-            onPress={() => { toggleAudio(); }}
+          <button
+            onClick={(e) => { e.stopPropagation(); toggleAudio(); }}
+            className="w-8 h-8 rounded-full bg-black/60 text-white flex items-center justify-center"
           >
-            {isAudioMuted ? <MicOff className="w-4 h-4 text-danger" /> : <Mic className="w-4 h-4" />}
-          </Button>
-          <Button
-            isIconOnly size="sm" radius="full" color="danger"
-            className="min-w-8 w-8 h-8"
-            onPress={() => endCall()}
+            {isAudioMuted ? <MicOff className="w-4 h-4 text-destructive" /> : <Mic className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); endCall(); }}
+            className="w-8 h-8 rounded-full bg-destructive text-white flex items-center justify-center"
           >
             <PhoneOff className="w-4 h-4" />
-          </Button>
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-[60] bg-[#0a0a18] flex flex-col animate-fade-in">
+    <div className="fixed inset-0 z-[60] bg-[#0a0a18] flex flex-col animate-appear">
       {/* Video background */}
       {isVideo && isConnected && remoteStream && (
         <video
@@ -119,31 +117,28 @@ export default function CallOverlay() {
       <div className="relative z-10 flex items-center justify-between px-6 pt-6 pb-3">
         <div className="flex items-center gap-2">
           {isConnected && (
-            <Chip size="sm" variant="flat" className="bg-white/10 text-white/80 backdrop-blur-sm border-0"
-              startContent={<QualityIcon className="w-3.5 h-3.5" />}
-            >
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 text-white/80 backdrop-blur-sm text-xs font-medium">
+              <QualityIcon className="w-3.5 h-3.5" />
               {connectionQuality}
-            </Chip>
+            </span>
           )}
           {isReconnecting && (
-            <Chip size="sm" variant="flat" className="bg-warning/20 text-warning border-0"
-              startContent={<Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            >
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-warning/20 text-warning text-xs font-medium">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
               Reconnecting
-            </Chip>
+            </span>
           )}
         </div>
 
         <div className="flex items-center gap-2">
           {isConnected && (
-            <Button
-              isIconOnly size="sm" radius="full" variant="flat"
-              className="bg-white/10 text-white backdrop-blur-sm hover:bg-white/20"
-              onPress={() => setIsMinimized(true)}
+            <button
+              onClick={() => setIsMinimized(true)}
+              className="w-8 h-8 rounded-full bg-white/10 text-white backdrop-blur-sm hover:bg-white/20 flex items-center justify-center transition-colors"
               aria-label="Minimize"
             >
               <Minimize2 className="w-4 h-4" />
-            </Button>
+            </button>
           )}
         </div>
       </div>
@@ -152,17 +147,16 @@ export default function CallOverlay() {
       <div className="relative z-10 flex-1 flex flex-col items-center justify-center">
         {(!isVideo || isRinging || isIncoming || isConnecting || isRemoteVideoOff) && (
           <div className="flex flex-col items-center gap-5 animate-appear">
-            <div className={cn('relative', (isRinging || isIncoming) && 'animate-pulse-soft')}>
-              <Avatar
+            <div className={cn('relative', (isRinging || isIncoming) && 'animate-pulse')}>
+              <ZAvatar
                 name={remoteName}
                 src={remoteUser?.avatarUrl}
-                isBordered
-                color="primary"
-                className="w-28 h-28 text-2xl"
+                size="xl"
+                className="w-28 h-28 text-2xl ring-4 ring-primary/30"
               />
               {isIncoming && (
                 <div className="absolute -bottom-1 -right-1 w-9 h-9 rounded-full bg-success flex items-center justify-center animate-bounce shadow-lg shadow-success/30">
-                  <PhoneIncoming className="w-4.5 h-4.5 text-white" />
+                  <PhoneIncoming className="w-4 h-4 text-white" />
                 </div>
               )}
             </div>
@@ -183,9 +177,9 @@ export default function CallOverlay() {
         {/* Timer badge for video calls */}
         {isVideo && isConnected && !isRemoteVideoOff && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2">
-            <Chip size="sm" variant="flat" className="bg-black/40 text-white backdrop-blur-sm border-0 tabular-nums font-medium">
+            <span className="px-3 py-1 rounded-full bg-black/40 text-white backdrop-blur-sm text-xs font-medium tabular-nums">
               {timer}
-            </Chip>
+            </span>
           </div>
         )}
 
@@ -194,7 +188,7 @@ export default function CallOverlay() {
           <div className="absolute bottom-24 right-6 w-32 h-44 rounded-xl overflow-hidden border-2 border-white/20 shadow-2xl">
             {isVideoOff ? (
               <div className="w-full h-full bg-[#1a1a2e] flex items-center justify-center">
-                <Avatar
+                <ZAvatar
                   name={localUser?.displayName || localUser?.username || 'You'}
                   size="md"
                   className="ring-2 ring-primary/30"
@@ -212,25 +206,23 @@ export default function CallOverlay() {
         {isIncoming ? (
           <div className="flex items-center justify-center gap-14">
             <div className="flex flex-col items-center gap-2.5">
-              <Button
-                isIconOnly radius="full" color="danger" size="lg"
-                className="w-16 h-16 shadow-lg shadow-danger/30"
-                onPress={declineCall}
+              <button
+                onClick={declineCall}
+                className="w-16 h-16 rounded-full bg-destructive text-white flex items-center justify-center shadow-lg shadow-destructive/30"
                 aria-label="Decline call"
               >
                 <PhoneOff className="w-6 h-6" />
-              </Button>
+              </button>
               <span className="text-xs text-white/60 font-medium">Decline</span>
             </div>
             <div className="flex flex-col items-center gap-2.5">
-              <Button
-                isIconOnly radius="full" color="success" size="lg"
-                className="w-16 h-16 shadow-lg shadow-success/30"
-                onPress={answerCall}
+              <button
+                onClick={answerCall}
+                className="w-16 h-16 rounded-full bg-success text-white flex items-center justify-center shadow-lg shadow-success/30"
                 aria-label="Accept call"
               >
                 <Phone className="w-6 h-6" />
-              </Button>
+              </button>
               <span className="text-xs text-white/60 font-medium">Accept</span>
             </div>
           </div>
@@ -259,24 +251,20 @@ function CallButton({
 }) {
   return (
     <div className="flex flex-col items-center gap-2">
-      <Button
-        isIconOnly
-        radius="full"
-        variant={danger ? 'solid' : 'flat'}
-        color={danger ? 'danger' : 'default'}
+      <button
+        onClick={onClick}
         className={cn(
-          'w-14 h-14 transition-all duration-200',
+          'w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200',
           danger
-            ? 'shadow-lg shadow-danger/30'
+            ? 'bg-destructive text-white shadow-lg shadow-destructive/30'
             : active
               ? 'bg-white/30 backdrop-blur-sm text-white'
               : 'bg-white/10 backdrop-blur-sm text-white/90 hover:bg-white/20',
         )}
-        onPress={onClick}
         aria-label={label}
       >
         <Icon className="w-6 h-6" />
-      </Button>
+      </button>
       <span className="text-[10px] text-white/60 font-medium">{label}</span>
     </div>
   );

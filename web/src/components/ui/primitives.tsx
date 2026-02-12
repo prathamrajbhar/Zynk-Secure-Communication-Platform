@@ -1,8 +1,3 @@
-// ═══════════════════════════════════════════════════════
-// ZYNK UI — Primitive Components (HeroUI v7)
-// Avatar · Badge · ProgressBar · AnimatedPresence · GlassPanel
-// ═══════════════════════════════════════════════════════
-
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -35,11 +30,7 @@ export function Avatar({ name, src, size = 'md', color, isOnline, showStatus = t
   return (
     <button
       type="button"
-      className={cn(
-        'relative flex-shrink-0 group outline-none',
-        onClick ? 'cursor-pointer' : 'cursor-default',
-        className,
-      )}
+      className={cn('relative flex-shrink-0 group outline-none', onClick ? 'cursor-pointer' : 'cursor-default', className)}
       onClick={onClick}
       aria-label={`${name}'s avatar${isOnline ? ', online' : ''}`}
       tabIndex={onClick ? 0 : -1}
@@ -48,35 +39,20 @@ export function Avatar({ name, src, size = 'md', color, isOnline, showStatus = t
         <img
           src={src}
           alt={name}
-          className={cn(
-            sizeClass,
-            'rounded-full object-cover ring-0 transition-all duration-200',
-            onClick && 'group-hover:ring-2 group-hover:ring-primary/40 group-hover:brightness-105',
-          )}
+          className={cn(sizeClass, 'rounded-full object-cover ring-0 transition-all duration-200', onClick && 'group-hover:ring-2 group-hover:ring-primary/40 group-hover:brightness-105')}
           onError={() => setImgError(true)}
           loading="lazy"
           draggable={false}
         />
       ) : (
         <div
-          className={cn(
-            sizeClass,
-            'rounded-full flex items-center justify-center font-semibold text-white select-none transition-all duration-200',
-            bgColor,
-            onClick && 'group-hover:brightness-110 group-hover:ring-2 group-hover:ring-primary/40',
-          )}
+          className={cn(sizeClass, 'rounded-full flex items-center justify-center font-semibold text-white select-none transition-all duration-200', bgColor, onClick && 'group-hover:brightness-110 group-hover:ring-2 group-hover:ring-primary/40')}
         >
           {getInitials(name)}
         </div>
       )}
       {showStatus && isOnline && (
-        <span
-          className={cn(
-            statusSize,
-            'absolute bottom-0 right-0 rounded-full bg-success border-content1 status-online',
-          )}
-          aria-label="Online"
-        />
+        <span className={cn(statusSize, 'absolute bottom-0 right-0 rounded-full bg-online border-background status-online online-pulse')} aria-label="Online" />
       )}
     </button>
   );
@@ -90,7 +66,7 @@ export function Badge({ count, max = 99, variant = 'default', size = 'sm', dot, 
   const variants = {
     default: 'bg-primary text-white',
     accent: 'bg-primary text-white',
-    danger: 'bg-danger text-white',
+    danger: 'bg-destructive text-white',
     success: 'bg-success text-white',
     warning: 'bg-warning text-white',
   };
@@ -105,15 +81,7 @@ export function Badge({ count, max = 99, variant = 'default', size = 'sm', dot, 
   }
 
   return (
-    <span
-      className={cn(
-        'rounded-full font-bold flex items-center justify-center flex-shrink-0 leading-none',
-        variants[variant],
-        sizes[size],
-        className,
-      )}
-      aria-label={`${count} unread`}
-    >
+    <span className={cn('rounded-full font-bold flex items-center justify-center flex-shrink-0 leading-none', variants[variant], sizes[size], className)} aria-label={`${count} unread`}>
       {count > max ? `${max}+` : count}
     </span>
   );
@@ -125,33 +93,25 @@ export function ProgressBar({ value, max = 100, variant = 'accent', size = 'md',
   const percentage = Math.min(Math.max((value / max) * 100, 0), 100);
 
   const variants = {
-    default: 'bg-default-400',
+    default: 'bg-muted-foreground',
     accent: 'bg-primary',
     success: 'bg-success',
-    danger: 'bg-danger',
+    danger: 'bg-destructive',
   };
 
-  const sizes = {
-    sm: 'h-1',
-    md: 'h-1.5',
-    lg: 'h-2',
-  };
+  const sizes = { sm: 'h-1', md: 'h-1.5', lg: 'h-2' };
 
   return (
     <div className={cn('w-full', className)} role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={max}>
       {showLabel && (
         <div className="flex justify-between mb-1.5">
-          <span className="text-xs text-default-400">Progress</span>
+          <span className="text-xs text-muted-foreground">Progress</span>
           <span className="text-xs font-bold text-primary">{Math.round(percentage)}%</span>
         </div>
       )}
-      <div className={cn('w-full rounded-full bg-content2 overflow-hidden', sizes[size])}>
+      <div className={cn('w-full rounded-full bg-secondary overflow-hidden', sizes[size])}>
         <div
-          className={cn(
-            'h-full rounded-full transition-all duration-500 ease-out',
-            variants[variant],
-            animated && 'relative overflow-hidden after:absolute after:inset-0 after:bg-gradient-to-r after:from-transparent after:via-white/20 after:to-transparent after:animate-shimmer',
-          )}
+          className={cn('h-full rounded-full transition-all duration-500 ease-out', variants[variant], animated && 'relative overflow-hidden after:absolute after:inset-0 after:bg-gradient-to-r after:from-transparent after:via-white/20 after:to-transparent after:animate-shimmer')}
           style={{ width: `${percentage}%` }}
         />
       </div>
@@ -191,10 +151,7 @@ export function AnimatedPresence({ children, show, animation = 'fade', duration 
 
   const anim = ANIMATIONS[animation];
   return (
-    <div
-      className={cn('transition-all', isAnimating ? anim.enter : anim.exit, className)}
-      style={{ transitionDuration: `${duration}ms` }}
-    >
+    <div className={cn('transition-all', isAnimating ? anim.enter : anim.exit, className)} style={{ transitionDuration: `${duration}ms` }}>
       {children}
     </div>
   );
@@ -202,19 +159,9 @@ export function AnimatedPresence({ children, show, animation = 'fade', duration 
 
 
 /* ─── GlassPanel ─── */
-export function GlassPanel({
-  children,
-  className,
-  ...props
-}: { children: ReactNode; className?: string } & React.HTMLAttributes<HTMLDivElement>) {
+export function GlassPanel({ children, className, ...props }: { children: ReactNode; className?: string } & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div
-      className={cn(
-        'glass-panel rounded-xl p-4',
-        className,
-      )}
-      {...props}
-    >
+    <div className={cn('glass-panel rounded-xl p-4', className)} {...props}>
       {children}
     </div>
   );
@@ -223,7 +170,7 @@ export function GlassPanel({
 
 /* ─── Skeleton ─── */
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn('rounded-lg bg-content2 animate-pulse', className)} />;
+  return <div className={cn('rounded-lg bg-secondary animate-pulse', className)} />;
 }
 
 
@@ -232,13 +179,13 @@ export function Divider({ label, className }: { label?: string; className?: stri
   if (label) {
     return (
       <div className={cn('flex items-center gap-3 my-2', className)}>
-        <div className="flex-1 h-px bg-divider" />
-        <span className="text-2xs font-medium text-default-400 uppercase tracking-wider">{label}</span>
-        <div className="flex-1 h-px bg-divider" />
+        <div className="flex-1 h-px bg-border" />
+        <span className="text-2xs font-medium text-muted-foreground uppercase tracking-wider">{label}</span>
+        <div className="flex-1 h-px bg-border" />
       </div>
     );
   }
-  return <div className={cn('h-px bg-divider my-2', className)} />;
+  return <div className={cn('h-px bg-border my-2', className)} />;
 }
 
 
@@ -256,10 +203,10 @@ export function Tooltip({ children, label, position = 'top' }: { children: React
       {children}
       <div
         className={cn(
-          'absolute z-50 px-2.5 py-1.5 text-xs font-medium text-white bg-content1 dark:bg-default-100 rounded-lg',
+          'absolute z-50 px-2.5 py-1.5 text-xs font-medium text-white bg-popover rounded-lg',
           'opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible',
           'transition-all duration-150 pointer-events-none whitespace-nowrap',
-          'shadow-lg border border-divider',
+          'shadow-lg border border-border',
           positions[position],
         )}
         role="tooltip"
@@ -273,10 +220,7 @@ export function Tooltip({ children, label, position = 'top' }: { children: React
 
 /* ─── EmptyState ─── */
 export function EmptyState({ icon, title, description, action }: {
-  icon: ReactNode;
-  title: string;
-  description?: string;
-  action?: ReactNode;
+  icon: ReactNode; title: string; description?: string; action?: ReactNode;
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 px-6 text-center animate-appear">
@@ -284,9 +228,7 @@ export function EmptyState({ icon, title, description, action }: {
         {icon}
       </div>
       <h3 className="text-lg font-semibold text-foreground mb-2">{title}</h3>
-      {description && (
-        <p className="text-sm text-default-400 max-w-xs leading-relaxed">{description}</p>
-      )}
+      {description && <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">{description}</p>}
       {action && <div className="mt-5">{action}</div>}
     </div>
   );

@@ -2,7 +2,7 @@
 
 ## 📝 PROJECT CONTEXT
 
-I have an **existing secure messaging web application** that is fully functional. I need you to perform a **complete UI/UX redesign** inspired by Telegram, Signal, and WhatsApp's modern interfaces. The application uses **Tailwind CSS** for styling.
+I have an **existing secure messaging web application** that isi fully functional. I need you to perform a **complete UI/UX redesign** inspired by Telegram, Signal, and WhatsApp's modern interfaces. The application uses **Tailwind CSS** for styling.
 
 ---
 

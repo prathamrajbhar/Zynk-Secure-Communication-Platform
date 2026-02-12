@@ -1,7 +1,3 @@
-// ═══════════════════════════════════════════════════════
-// ZYNK UI — Type Definitions
-// ═══════════════════════════════════════════════════════
-
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 export type BadgeVariant = 'default' | 'accent' | 'danger' | 'success' | 'warning';
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'icon';

@@ -1,17 +1,14 @@
 // ═══════════════════════════════════════════════════════
-// ZYNK UI — Group Create Modal (HeroUI v7)
+// ZYNK UI — Group Create Modal (Discord-style)
 // ═══════════════════════════════════════════════════════
 
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
-import {
-  Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
-  Input, Button, Spinner, Avatar, Chip, Checkbox,
-} from '@heroui/react';
-import { Search, Users, Camera, ArrowRight, ArrowLeft } from 'lucide-react';
+import { Avatar as ZAvatar } from '@/components/ui';
+import { Search, Users, Camera, ArrowRight, ArrowLeft, X, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
 import { showToast } from '@/components/ui';
 
@@ -33,6 +30,7 @@ export default function GroupCreateModal() {
   const [creating, setCreating] = useState(false);
   const [groupName, setGroupName] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const backdropRef = useRef<HTMLDivElement>(null);
 
   const search = (q: string) => {
     setQuery(q);
@@ -81,136 +79,187 @@ export default function GroupCreateModal() {
     }
   };
 
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowGroupCreate(false); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [setShowGroupCreate]);
+
+  if (!showGroupCreate) return null;
+
   return (
-    <Modal isOpen={showGroupCreate} onOpenChange={(open) => setShowGroupCreate(open)} size="md" placement="center" scrollBehavior="inside"
-      classNames={{ base: 'bg-content1 border border-divider', header: 'border-b border-divider', body: 'p-0', footer: 'border-t border-divider' }}>
-      <ModalContent>
-        <ModalHeader className="flex items-center gap-3">
+    <div
+      ref={backdropRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-appear"
+      onClick={(e) => { if (e.target === backdropRef.current) setShowGroupCreate(false); }}
+    >
+      <div className="w-full max-w-md bg-card border border-border rounded-2xl shadow-2xl animate-slide-up overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
           {step === 'info' && (
-            <Button isIconOnly variant="light" size="sm" radius="full" onPress={() => setStep('members')} aria-label="Back">
+            <button
+              onClick={() => setStep('members')}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              aria-label="Back"
+            >
               <ArrowLeft className="w-5 h-5" />
-            </Button>
+            </button>
           )}
           <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center">
             <Users className="w-5 h-5 text-primary" />
           </div>
-          <div>
-            <h2 className="text-lg font-bold">{step === 'members' ? 'Add Members' : 'Group Info'}</h2>
-            <p className="text-xs text-default-400 font-normal">
+          <div className="flex-1">
+            <h2 className="text-lg font-bold text-foreground">
+              {step === 'members' ? 'Add Members' : 'Group Info'}
+            </h2>
+            <p className="text-xs text-muted-foreground">
               {step === 'members' ? `${selected.length} selected` : 'Name your group'}
             </p>
           </div>
-        </ModalHeader>
+          <button
+            onClick={() => setShowGroupCreate(false)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
 
-        <ModalBody>
-          {step === 'members' ? (
-            <>
-              {/* Selected chips */}
-              {selected.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 px-4 pt-3">
-                  {selected.map((u) => (
-                    <Chip key={u.id} variant="flat" color="primary" size="sm" onClose={() => toggleUser(u)}>
-                      {u.display_name || u.username}
-                    </Chip>
-                  ))}
-                </div>
-              )}
+        {/* Body */}
+        {step === 'members' ? (
+          <>
+            {/* Selected chips */}
+            {selected.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-4 pt-3">
+                {selected.map((u) => (
+                  <span
+                    key={u.id}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 text-primary text-xs font-medium rounded-full cursor-pointer hover:bg-primary/20 transition-colors"
+                    onClick={() => toggleUser(u)}
+                  >
+                    {u.display_name || u.username}
+                    <X className="w-3 h-3" />
+                  </span>
+                ))}
+              </div>
+            )}
 
-              <div className="px-4 py-3">
-                <Input
+            {/* Search */}
+            <div className="px-4 py-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input
                   value={query}
-                  onValueChange={search}
+                  onChange={(e) => search(e.target.value)}
                   placeholder="Search users..."
-                  variant="flat"
-                  size="sm"
-                  radius="lg"
-                  startContent={<Search className="w-4 h-4 text-default-400" />}
-                  classNames={{ inputWrapper: 'bg-content2' }}
+                  className="w-full h-9 pl-9 pr-4 bg-secondary border-0 rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
                   autoFocus
                 />
               </div>
+            </div>
 
-              <div className="max-h-[280px] overflow-y-auto">
-                {loading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Spinner size="md" color="primary" />
-                  </div>
-                ) : results.length > 0 ? (
-                  results.map((u) => {
-                    const isSelected = selected.some((s) => s.id === u.id);
-                    return (
-                      <button
-                        key={u.id}
-                        onClick={() => toggleUser(u)}
-                        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-content2 transition-colors"
-                      >
-                        <Avatar name={(u.display_name || u.username).slice(0, 2).toUpperCase()} src={u.avatar_url} size="sm" />
-                        <div className="flex-1 min-w-0 text-left">
-                          <p className="text-sm font-semibold text-foreground truncate">{u.display_name || u.username}</p>
-                          <p className="text-xs text-default-400">@{u.username}</p>
-                        </div>
-                        <Checkbox isSelected={isSelected} color="primary" size="sm" />
-                      </button>
-                    );
-                  })
-                ) : query ? (
-                  <p className="text-center text-sm text-default-400 py-8">No users found</p>
-                ) : (
-                  <p className="text-center text-sm text-default-400 py-8">Search for users to add</p>
-                )}
-              </div>
-            </>
-          ) : (
+            {/* User list */}
+            <div className="max-h-[280px] overflow-y-auto chat-scrollbar">
+              {loading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 text-primary animate-spin" />
+                </div>
+              ) : results.length > 0 ? (
+                results.map((u) => {
+                  const isSelected = selected.some((s) => s.id === u.id);
+                  return (
+                    <button
+                      key={u.id}
+                      onClick={() => toggleUser(u)}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-accent transition-colors text-left"
+                    >
+                      <ZAvatar name={u.display_name || u.username} src={u.avatar_url} size="sm" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-foreground truncate">{u.display_name || u.username}</p>
+                        <p className="text-xs text-muted-foreground">@{u.username}</p>
+                      </div>
+                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-border'}`}>
+                        {isSelected && (
+                          <svg className="w-3 h-3 text-white" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="text-center text-sm text-muted-foreground py-8">
+                  {query ? 'No users found' : 'Search for users to add'}
+                </p>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-4 py-3 border-t border-border">
+              <button
+                onClick={() => setStep('info')}
+                disabled={selected.length === 0}
+                className="w-full h-10 bg-primary text-white font-semibold rounded-lg hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                Next <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
             <div className="p-5 space-y-4">
               <div className="flex items-center gap-4">
                 <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center cursor-pointer hover:bg-primary/20 transition-colors">
                   <Camera className="w-6 h-6 text-primary" />
                 </div>
-                <div className="flex-1">
-                  <Input
+                <div className="flex-1 space-y-1.5">
+                  <label htmlFor="group-name" className="text-sm font-medium text-foreground">Group Name</label>
+                  <input
+                    id="group-name"
                     value={groupName}
-                    onValueChange={setGroupName}
-                    label="Group Name"
-                    variant="bordered"
-                    size="sm"
+                    onChange={(e) => setGroupName(e.target.value)}
                     placeholder="Enter group name"
                     maxLength={64}
                     autoFocus
+                    className="w-full h-10 px-3 bg-secondary border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
                   />
                 </div>
               </div>
 
               <div>
-                <p className="text-xs font-semibold text-default-400 uppercase tracking-wide mb-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
                   Members ({selected.length})
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {selected.map((u) => (
-                    <div key={u.id} className="flex items-center gap-1.5 text-xs text-default-500">
-                      <Avatar name={(u.display_name || u.username).slice(0, 2).toUpperCase()} src={u.avatar_url} size="sm" className="w-6 h-6" />
+                    <div key={u.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <ZAvatar name={u.display_name || u.username} src={u.avatar_url} size="xs" />
                       <span>{u.display_name || u.username}</span>
                     </div>
                   ))}
                 </div>
               </div>
             </div>
-          )}
-        </ModalBody>
 
-        <ModalFooter>
-          {step === 'members' ? (
-            <Button color="primary" fullWidth radius="lg" isDisabled={selected.length === 0} onPress={() => setStep('info')}
-              endContent={<ArrowRight className="w-4 h-4" />} className="font-semibold">
-              Next
-            </Button>
-          ) : (
-            <Button color="primary" fullWidth radius="lg" isDisabled={creating || !groupName.trim()} isLoading={creating}
-              onPress={handleCreate} className="font-semibold">
-              Create Group
-            </Button>
-          )}
-        </ModalFooter>
-      </ModalContent>
-    </Modal>
+            {/* Footer */}
+            <div className="px-4 py-3 border-t border-border">
+              <button
+                onClick={handleCreate}
+                disabled={creating || !groupName.trim()}
+                className="w-full h-10 bg-primary text-white font-semibold rounded-lg hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {creating ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</>
+                ) : (
+                  'Create Group'
+                )}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

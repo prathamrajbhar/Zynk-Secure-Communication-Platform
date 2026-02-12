@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════
-// ZYNK UI — Connection Indicator & Banner (HeroUI)
+// ZYNK UI — Connection Indicator & Banner (v8)
 // ═══════════════════════════════════════════════════════
 
 'use client';
@@ -65,7 +65,7 @@ export function ConnectionDot() {
       className={cn(
         'w-2 h-2 rounded-full inline-block',
         colors[status],
-        status === 'connected' && 'status-online',
+        status === 'connected' && 'online-pulse',
       )}
       title={status}
     />

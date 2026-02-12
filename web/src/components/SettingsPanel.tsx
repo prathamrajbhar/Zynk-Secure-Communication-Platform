@@ -1,20 +1,17 @@
 // ═══════════════════════════════════════════════════════
-// ZYNK UI — Settings Panel (HeroUI v7)
+// ZYNK UI — Settings Panel (Discord-style)
 // ═══════════════════════════════════════════════════════
 
 'use client';
 
+import React from 'react';
 import { useUIStore, COLOR_SCHEMES, CHAT_BACKGROUNDS, type ColorScheme, type ChatBubbleStyle, type FontSize, type ChatBackground } from '@/stores/uiStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import {
-  Modal, ModalContent, ModalHeader, ModalBody,
-  Button, Switch, Chip, Card, CardBody,
-} from '@heroui/react';
-import {
   Palette, Bell, Shield, Monitor, HardDrive, Info, Moon, Sun,
   Check, ChevronRight, Sparkles, Maximize2, Volume2,
-  Lock, Eye, Trash2, LogOut,
+  Lock, Eye, Trash2, LogOut, X,
 } from 'lucide-react';
 
 export default function SettingsPanel() {
@@ -41,94 +38,111 @@ export default function SettingsPanel() {
     { id: 'about' as const, icon: Info, label: 'About' },
   ];
 
-  return (
-    <Modal isOpen={showSettings} onOpenChange={(open) => setShowSettings(open)} size="lg" placement="center" scrollBehavior="inside"
-      classNames={{ base: 'bg-content1 border border-divider max-h-[85vh]', header: 'border-b border-divider', body: 'p-0' }}>
-      <ModalContent>
-        <ModalHeader>
-          <h2 className="text-lg font-bold">Settings</h2>
-        </ModalHeader>
+  if (!showSettings) return null;
 
-        <ModalBody>
-          <div className="flex min-h-0">
-            {/* Sidebar tabs */}
-            <div className="w-44 border-r border-divider py-2 flex-shrink-0 overflow-y-auto hidden sm:block">
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={() => setShowSettings(false)}
+      />
+
+      {/* Panel */}
+      <div className="relative z-10 w-full max-w-2xl bg-card border border-border rounded-2xl shadow-2xl animate-slide-up overflow-hidden max-h-[85vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
+          <h2 className="text-lg font-bold text-foreground">Settings</h2>
+          <button
+            onClick={() => setShowSettings(false)}
+            className="p-2 rounded-full hover:bg-secondary transition-colors text-muted-foreground"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex min-h-0 flex-1">
+          {/* Sidebar tabs — desktop */}
+          <div className="w-44 border-r border-border py-2 flex-shrink-0 overflow-y-auto hidden sm:block">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setSettingsTab(tab.id)}
+                className={cn(
+                  'w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors rounded-lg mx-1',
+                  settingsTab === tab.id
+                    ? 'bg-primary/10 text-primary font-semibold'
+                    : 'text-muted-foreground hover:bg-secondary',
+                )}
+              >
+                <tab.icon className="w-4 h-4" />
+                <span>{tab.label}</span>
+              </button>
+            ))}
+
+            <div className="h-px bg-border my-2 mx-3" />
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-destructive hover:bg-destructive/10 rounded-lg mx-1 transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+
+          {/* Mobile tab selector */}
+          <div className="sm:hidden w-full flex flex-col">
+            <div className="flex overflow-x-auto gap-1 px-3 py-2 border-b border-border">
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setSettingsTab(tab.id)}
                   className={cn(
-                    'w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors rounded-lg mx-1',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-colors flex-shrink-0',
                     settingsTab === tab.id
-                      ? 'bg-primary/10 text-primary font-semibold'
-                      : 'text-default-500 hover:bg-content2',
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-secondary text-muted-foreground hover:bg-accent',
                   )}
                 >
-                  <tab.icon className="w-4 h-4" />
-                  <span>{tab.label}</span>
+                  <tab.icon className="w-3 h-3" />
+                  {tab.label}
                 </button>
               ))}
-
-              <div className="h-px bg-divider my-2 mx-3" />
-              <button
-                onClick={handleLogout}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-danger hover:bg-danger/10 rounded-lg mx-1 transition-colors"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Sign Out</span>
-              </button>
-            </div>
-
-            {/* Mobile tab selector */}
-            <div className="sm:hidden w-full">
-              <div className="flex overflow-x-auto gap-1 px-3 py-2 border-b border-divider">
-                {tabs.map((tab) => (
-                  <Chip
-                    key={tab.id}
-                    variant={settingsTab === tab.id ? 'solid' : 'flat'}
-                    color={settingsTab === tab.id ? 'primary' : 'default'}
-                    size="sm"
-                    classNames={{ base: 'cursor-pointer flex-shrink-0', content: 'text-xs font-semibold' }}
-                    onClick={() => setSettingsTab(tab.id)}
-                    startContent={<tab.icon className="w-3 h-3" />}
-                  >
-                    {tab.label}
-                  </Chip>
-                ))}
-              </div>
-            </div>
-
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-6">
-              {settingsTab === 'appearance' && (
-                <AppearanceSettings
-                  theme={theme} toggleTheme={toggleTheme}
-                  colorScheme={colorScheme} setColorScheme={setColorScheme}
-                  bubbleStyle={bubbleStyle} setBubbleStyle={setBubbleStyle}
-                  fontSize={fontSize} setFontSize={setFontSize}
-                  compactMode={compactMode} setCompactMode={setCompactMode}
-                  animationsEnabled={animationsEnabled} setAnimationsEnabled={setAnimationsEnabled}
-                  chatBackground={chatBackground} setChatBackground={setChatBackground}
-                />
-              )}
-
-              {settingsTab === 'notifications' && (
-                <NotificationSettings
-                  messageSoundEnabled={messageSoundEnabled} setMessageSoundEnabled={setMessageSoundEnabled}
-                  callSoundEnabled={callSoundEnabled} setCallSoundEnabled={setCallSoundEnabled}
-                  notifSoundEnabled={notifSoundEnabled} setNotifSoundEnabled={setNotifSoundEnabled}
-                />
-              )}
-
-              {settingsTab === 'privacy' && <PrivacySettings />}
-              {settingsTab === 'devices' && <DevicesSettings />}
-              {settingsTab === 'storage' && <StorageSettings />}
-              {settingsTab === 'about' && <AboutSettings />}
             </div>
           </div>
-        </ModalBody>
-      </ModalContent>
-    </Modal>
+
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-6 chat-scrollbar">
+            {settingsTab === 'appearance' && (
+              <AppearanceSettings
+                theme={theme} toggleTheme={toggleTheme}
+                colorScheme={colorScheme} setColorScheme={setColorScheme}
+                bubbleStyle={bubbleStyle} setBubbleStyle={setBubbleStyle}
+                fontSize={fontSize} setFontSize={setFontSize}
+                compactMode={compactMode} setCompactMode={setCompactMode}
+                animationsEnabled={animationsEnabled} setAnimationsEnabled={setAnimationsEnabled}
+                chatBackground={chatBackground} setChatBackground={setChatBackground}
+              />
+            )}
+
+            {settingsTab === 'notifications' && (
+              <NotificationSettings
+                messageSoundEnabled={messageSoundEnabled} setMessageSoundEnabled={setMessageSoundEnabled}
+                callSoundEnabled={callSoundEnabled} setCallSoundEnabled={setCallSoundEnabled}
+                notifSoundEnabled={notifSoundEnabled} setNotifSoundEnabled={setNotifSoundEnabled}
+              />
+            )}
+
+            {settingsTab === 'privacy' && <PrivacySettings />}
+            {settingsTab === 'devices' && <DevicesSettings />}
+            {settingsTab === 'storage' && <StorageSettings />}
+            {settingsTab === 'about' && <AboutSettings />}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -166,8 +180,8 @@ function AppearanceSettings({
               key={cs.id}
               onClick={() => setColorScheme(cs.id)}
               className={cn(
-                'w-8 h-8 rounded-full transition-all ring-2 ring-offset-2 ring-offset-content1',
-                colorScheme === cs.id ? 'ring-primary scale-110' : 'ring-transparent hover:ring-default-300',
+                'w-8 h-8 rounded-full transition-all ring-2 ring-offset-2 ring-offset-card',
+                colorScheme === cs.id ? 'ring-primary scale-110' : 'ring-transparent hover:ring-muted-foreground/30',
               )}
               style={{ backgroundColor: cs.color }}
               title={cs.name}
@@ -188,11 +202,11 @@ function AppearanceSettings({
                 'flex flex-col items-center gap-1 p-2 rounded-lg border-2 transition-all',
                 chatBackground === bg.id
                   ? 'border-primary bg-primary/10'
-                  : 'border-divider hover:border-primary/30',
+                  : 'border-border hover:border-primary/30',
               )}
             >
               <span className="text-lg">{bg.preview}</span>
-              <span className="text-2xs text-default-400">{bg.label}</span>
+              <span className="text-[10px] text-muted-foreground">{bg.label}</span>
             </button>
           ))}
         </div>
@@ -202,16 +216,18 @@ function AppearanceSettings({
       <SettingsSection title="Bubble Style">
         <div className="flex gap-2">
           {(['gradient', 'solid', 'minimal'] as ChatBubbleStyle[]).map((style) => (
-            <Chip
+            <button
               key={style}
-              variant={bubbleStyle === style ? 'solid' : 'flat'}
-              color={bubbleStyle === style ? 'primary' : 'default'}
-              size="sm"
-              classNames={{ base: 'cursor-pointer capitalize', content: 'text-xs font-semibold' }}
               onClick={() => setBubbleStyle(style)}
+              className={cn(
+                'px-3 py-1.5 rounded-full text-xs font-semibold capitalize transition-colors',
+                bubbleStyle === style
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-muted-foreground hover:bg-accent',
+              )}
             >
               {style}
-            </Chip>
+            </button>
           ))}
         </div>
       </SettingsSection>
@@ -220,16 +236,18 @@ function AppearanceSettings({
       <SettingsSection title="Font Size">
         <div className="flex gap-2">
           {(['small', 'medium', 'large'] as FontSize[]).map((size) => (
-            <Chip
+            <button
               key={size}
-              variant={fontSize === size ? 'solid' : 'flat'}
-              color={fontSize === size ? 'primary' : 'default'}
-              size="sm"
-              classNames={{ base: 'cursor-pointer capitalize', content: 'text-xs font-semibold' }}
               onClick={() => setFontSize(size)}
+              className={cn(
+                'px-3 py-1.5 rounded-full text-xs font-semibold capitalize transition-colors',
+                fontSize === size
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-muted-foreground hover:bg-accent',
+              )}
             >
               {size}
-            </Chip>
+            </button>
           ))}
         </div>
       </SettingsSection>
@@ -277,17 +295,15 @@ function PrivacySettings() {
       </SettingsSection>
 
       <SettingsSection title="Security">
-        <Card className="bg-primary/10 border border-primary/20">
-          <CardBody className="flex-row gap-3">
-            <Lock className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-foreground">End-to-End Encryption</p>
-              <p className="text-xs text-default-400 mt-0.5 leading-relaxed">
-                All messages, calls, and files are encrypted with 256-bit AES. Not even Zynk can read your data.
-              </p>
-            </div>
-          </CardBody>
-        </Card>
+        <div className="flex gap-3 p-3 rounded-xl bg-primary/10 border border-primary/20">
+          <Lock className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-foreground">End-to-End Encryption</p>
+            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+              All messages, calls, and files are encrypted with 256-bit AES. Not even Zynk can read your data.
+            </p>
+          </div>
+        </div>
       </SettingsSection>
     </>
   );
@@ -295,14 +311,14 @@ function PrivacySettings() {
 
 function PrivacyRow({ icon: Icon, label, value }: { icon: typeof Eye; label: string; value: string }) {
   return (
-    <button className="w-full flex items-center justify-between py-2 hover:bg-content2 rounded-lg px-2 -mx-2 transition-colors">
+    <button className="w-full flex items-center justify-between py-2 hover:bg-secondary rounded-lg px-2 -mx-2 transition-colors">
       <div className="flex items-center gap-2.5">
-        <Icon className="w-4 h-4 text-default-400" />
+        <Icon className="w-4 h-4 text-muted-foreground" />
         <span className="text-sm text-foreground">{label}</span>
       </div>
       <div className="flex items-center gap-1">
-        <span className="text-xs text-default-400">{value}</span>
-        <ChevronRight className="w-4 h-4 text-default-400" />
+        <span className="text-xs text-muted-foreground">{value}</span>
+        <ChevronRight className="w-4 h-4 text-muted-foreground" />
       </div>
     </button>
   );
@@ -313,13 +329,15 @@ function PrivacyRow({ icon: Icon, label, value }: { icon: typeof Eye; label: str
 function DevicesSettings() {
   return (
     <SettingsSection title="Active Devices">
-      <div className="flex items-start gap-3 p-3 rounded-xl bg-content2 border border-divider">
+      <div className="flex items-start gap-3 p-3 rounded-xl bg-secondary border border-border">
         <Monitor className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
         <div className="flex-1">
           <p className="text-sm font-semibold text-foreground">Current Device</p>
-          <p className="text-xs text-default-400 mt-0.5">Web Browser · Active now</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Web Browser · Active now</p>
         </div>
-        <Chip color="success" size="sm" variant="flat">Current</Chip>
+        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-success/10 text-success">
+          Current
+        </span>
       </div>
     </SettingsSection>
   );
@@ -332,16 +350,17 @@ function StorageSettings() {
     <SettingsSection title="Storage Usage">
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-default-500">Cached Messages</span>
+          <span className="text-sm text-muted-foreground">Cached Messages</span>
           <span className="text-sm font-medium text-foreground">—</span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-sm text-default-500">Encryption Keys</span>
+          <span className="text-sm text-muted-foreground">Encryption Keys</span>
           <span className="text-sm font-medium text-foreground">Stored locally</span>
         </div>
-        <Button variant="flat" color="danger" size="sm" startContent={<Trash2 className="w-4 h-4" />} className="mt-2">
+        <button className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-destructive bg-destructive/10 rounded-lg hover:bg-destructive/20 transition-colors mt-2">
+          <Trash2 className="w-4 h-4" />
           Clear Cache
-        </Button>
+        </button>
       </div>
     </SettingsSection>
   );
@@ -353,12 +372,12 @@ function AboutSettings() {
   return (
     <SettingsSection title="About Zynk">
       <div className="text-center py-4">
-        <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center mx-auto mb-3">
-          <span className="text-white text-lg font-extrabold">Z</span>
+        <div className="w-14 h-14 rounded-2xl gradient-brand flex items-center justify-center mx-auto mb-3 shadow-lg shadow-primary/20">
+          <Shield className="w-7 h-7 text-white" />
         </div>
         <h3 className="text-lg font-bold text-foreground">Zynk</h3>
-        <p className="text-xs text-default-400 mt-1">Version 1.0.0</p>
-        <p className="text-sm text-default-500 mt-3 max-w-xs mx-auto leading-relaxed">
+        <p className="text-xs text-muted-foreground mt-1">Version 1.0.0</p>
+        <p className="text-sm text-muted-foreground mt-3 max-w-xs mx-auto leading-relaxed">
           Privacy-first encrypted messaging, voice &amp; video calls, and file sharing.
         </p>
       </div>
@@ -371,7 +390,7 @@ function AboutSettings() {
 function SettingsSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="text-xs font-bold text-default-400 uppercase tracking-wider mb-3">{title}</h3>
+      <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">{title}</h3>
       {children}
     </div>
   );
@@ -387,11 +406,11 @@ function ThemeCard({ active, onClick, icon: Icon, label }: {
         'flex-1 flex items-center gap-2.5 p-3 rounded-xl border-2 transition-all',
         active
           ? 'border-primary bg-primary/10'
-          : 'border-divider hover:border-primary/30',
+          : 'border-border hover:border-primary/30',
       )}
     >
-      <Icon className={cn('w-5 h-5', active ? 'text-primary' : 'text-default-400')} />
-      <span className={cn('text-sm font-semibold', active ? 'text-primary' : 'text-default-500')}>
+      <Icon className={cn('w-5 h-5', active ? 'text-primary' : 'text-muted-foreground')} />
+      <span className={cn('text-sm font-semibold', active ? 'text-primary' : 'text-muted-foreground')}>
         {label}
       </span>
       {active && <Check className="w-4 h-4 text-primary ml-auto" />}
@@ -405,10 +424,25 @@ function ToggleRow({ icon: Icon, label, checked, onChange }: {
   return (
     <div className="flex items-center justify-between py-2.5">
       <div className="flex items-center gap-2.5">
-        <Icon className="w-4 h-4 text-default-400" />
+        <Icon className="w-4 h-4 text-muted-foreground" />
         <span className="text-sm text-foreground">{label}</span>
       </div>
-      <Switch size="sm" color="primary" isSelected={checked} onValueChange={onChange} />
+      <button
+        onClick={() => onChange(!checked)}
+        className={cn(
+          'relative w-11 h-6 rounded-full transition-colors flex-shrink-0',
+          checked ? 'bg-primary' : 'bg-muted',
+        )}
+        role="switch"
+        aria-checked={checked}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform',
+            checked && 'translate-x-5',
+          )}
+        />
+      </button>
     </div>
   );
 }

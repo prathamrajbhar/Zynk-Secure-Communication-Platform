@@ -1,11 +1,10 @@
 // ═══════════════════════════════════════════════════════
-// ZYNK UI — Error Boundary (HeroUI)
+// ZYNK UI — Error Boundary (Discord-style)
 // ═══════════════════════════════════════════════════════
 
 'use client';
 
 import React, { Component, type ErrorInfo, type ReactNode } from 'react';
-import { Button } from '@heroui/react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 interface Props {
@@ -39,23 +38,21 @@ export class ErrorBoundary extends Component<Props, State> {
 
       return (
         <div className="flex-1 flex items-center justify-center p-8">
-          <div className="text-center max-w-sm animate-fade-in">
-            <div className="w-14 h-14 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-5">
-              <AlertTriangle className="w-7 h-7 text-danger" />
+          <div className="text-center max-w-sm animate-appear">
+            <div className="w-14 h-14 rounded-2xl bg-destructive/10 flex items-center justify-center mx-auto mb-5">
+              <AlertTriangle className="w-7 h-7 text-destructive" />
             </div>
             <h3 className="text-lg font-bold text-foreground mb-2">Something went wrong</h3>
-            <p className="text-sm text-default-400 mb-6 leading-relaxed">
+            <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
               {this.state.error?.message || 'An unexpected error occurred'}
             </p>
-            <Button
-              color="primary"
-              variant="shadow"
-              radius="lg"
-              onPress={this.handleRetry}
-              startContent={<RefreshCw className="w-4 h-4" />}
+            <button
+              onClick={this.handleRetry}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground font-semibold rounded-xl hover:bg-primary/90 transition-colors shadow-lg shadow-primary/25"
             >
+              <RefreshCw className="w-4 h-4" />
               Try Again
-            </Button>
+            </button>
           </div>
         </div>
       );

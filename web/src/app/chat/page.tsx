@@ -22,8 +22,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ConnectionBanner } from '@/components/ConnectionIndicator';
 import CallOverlay from '@/components/CallOverlay';
 import { useUIStore } from '@/stores/uiStore';
-import { Spinner } from '@heroui/react';
-import { showToast } from '@/components/ui';
+import { FullPageLoader, showToast } from '@/components/ui';
 import {
   requestNotificationPermission,
   notifyIncomingMessage,
@@ -95,7 +94,6 @@ export default function ChatPage() {
     const chatStore = useChatStore.getState();
     chatStore.fetchConversations();
 
-    // Message events
     socket.on(SOCKET_EVENTS.MESSAGE_RECEIVED, async (message) => {
       let decryptedContent: string | undefined;
       const currentUser = useAuthStore.getState().user;
@@ -259,35 +257,21 @@ export default function ChatPage() {
   }, []);
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <Spinner size="lg" color="primary" />
-          <span className="text-sm text-default-400 font-medium animate-pulse">Loading Zynk...</span>
-        </div>
-      </div>
-    );
+    return <FullPageLoader message="Loading Zynk..." />;
   }
 
   if (!isAuthenticated) return null;
 
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
-      {/* Call overlay */}
       <CallOverlay />
-      {/* Connection banner */}
       <ConnectionBanner />
 
       <div className="flex-1 flex min-h-0">
-        {/* Sidebar */}
         <Sidebar />
-
-        {/* Main Chat Area */}
         <ErrorBoundary>
           <ChatArea />
         </ErrorBoundary>
-
-        {/* User Info Panel */}
         {showUserInfo && (() => {
           const chatStore = useChatStore.getState();
           const conv = chatStore.conversations.find(c => c.id === chatStore.activeConversation);

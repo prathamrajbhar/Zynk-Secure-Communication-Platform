@@ -30,8 +30,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark" suppressHydrationWarning>
       <body className={`${inter.variable} font-sans bg-background text-foreground antialiased`} suppressHydrationWarning>
         <Providers>
-          {children}
-          <ToastProvider />
+          <ToastProvider>
+            {children}
+          </ToastProvider>
         </Providers>
       </body>
     </html>
