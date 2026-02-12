@@ -38,10 +38,10 @@ export function truncate(text: string, length: number): string {
   return text.slice(0, length) + '...';
 }
 
-// Shared avatar color palette
+// Shared avatar color palette — Telegram-style vibrant set
 export const avatarColors = [
-  'bg-rose-500', 'bg-violet-500', 'bg-blue-500', 'bg-cyan-500',
-  'bg-emerald-500', 'bg-amber-500', 'bg-zynk-500', 'bg-red-500',
+  'bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-emerald-500',
+  'bg-cyan-500', 'bg-sky-500', 'bg-blue-500', 'bg-indigo-500',
 ];
 
 /** Deterministic avatar color based on a name/id string */

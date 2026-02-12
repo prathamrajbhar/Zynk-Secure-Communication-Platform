@@ -4,8 +4,9 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import prisma from '../db/client';
 import { redis } from '../db/redis';
-import { CallType, CallStatus, MessageType, MessageStatus, ParticipantRole, Platform, ConversationType, Prisma } from '@prisma/client';
-import { pushNewMessage, pushIncomingCall, pushMissedCall } from '../services/pushNotification';
+import { MessageType, MessageStatus, ParticipantRole, Platform, ConversationType, Prisma } from '@prisma/client';
+import { pushNewMessage } from '../services/pushNotification';
+import { registerCallHandlers } from './calls';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -15,103 +16,6 @@ interface AuthenticatedSocket extends Socket {
 // Maps for managing connections
 const userSockets = new Map<string, Set<string>>(); // userId -> Set of socketIds
 const socketUsers = new Map<string, string>(); // socketId -> userId
-
-// ========== Active Call State Management ==========
-const userActiveCalls = new Map<string, string>(); // userId -> callId (one active call per user)
-const callParticipantMap = new Map<string, Set<string>>(); // callId -> Set<userId>
-const callRingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-
-function clearCallRingTimeout(callId: string) {
-  const t = callRingTimeouts.get(callId);
-  if (t) { clearTimeout(t); callRingTimeouts.delete(callId); }
-}
-
-function cleanupCallTracking(callId: string) {
-  const participants = callParticipantMap.get(callId);
-  if (participants) {
-    for (const uid of participants) {
-      if (userActiveCalls.get(uid) === callId) {
-        userActiveCalls.delete(uid);
-      }
-    }
-    callParticipantMap.delete(callId);
-  }
-  clearCallRingTimeout(callId);
-}
-
-async function endCallWithStatus(
-  callId: string,
-  status: CallStatus,
-  io: SocketIOServer,
-  endedBy?: string
-) {
-  try {
-    clearCallRingTimeout(callId);
-
-    const callData = await prisma.call.findUnique({
-      where: { id: callId },
-      select: { started_at: true, status: true }
-    });
-
-    // Don't re-end already terminated calls
-    if (!callData || ['ended', 'missed', 'declined'].includes(callData.status)) {
-      cleanupCallTracking(callId);
-      return;
-    }
-
-    const duration = callData.started_at
-      ? Math.floor((Date.now() - new Date(callData.started_at).getTime()) / 1000)
-      : 0;
-
-    await prisma.$transaction([
-      prisma.call.update({
-        where: { id: callId },
-        data: {
-          status,
-          ended_at: new Date(),
-          duration_seconds: duration
-        }
-      }),
-      prisma.callParticipant.updateMany({
-        where: { call_id: callId, left_at: null },
-        data: { left_at: new Date() }
-      })
-    ]);
-
-    // Notify all participants
-    const participants = callParticipantMap.get(callId);
-    if (participants) {
-      for (const uid of participants) {
-        io.to(`user:${uid}`).emit('call:ended', {
-          call_id: callId,
-          status,
-          duration_seconds: duration,
-          ended_by: endedBy || 'system'
-        });
-      }
-    }
-
-    cleanupCallTracking(callId);
-  } catch (error) {
-    console.error(`Failed to end call ${callId}:`, error);
-    cleanupCallTracking(callId);
-  }
-}
-
-function getIceServers(): object[] {
-  const servers: object[] = config.stun.urls.map(url => ({ urls: url }));
-  if (config.turn.urls) {
-    const turnUrls = config.turn.urls.split(',').map(u => u.trim()).filter(Boolean);
-    if (turnUrls.length > 0) {
-      servers.push({
-        urls: turnUrls,
-        username: config.turn.username,
-        credential: config.turn.credential,
-      });
-    }
-  }
-  return servers;
-}
 
 export function setupWebSocket(httpServer: HTTPServer) {
   const io = new SocketIOServer(httpServer, {
@@ -176,7 +80,8 @@ export function setupWebSocket(httpServer: HTTPServer) {
 
     // Join all conversation rooms
     try {
-      const participants = await prisma.conversationParticipant.findMany({
+      const participants = await prisma.conversationParticipant.findMany(
+{
         where: { user_id: userId },
         select: { conversation_id: true }
       });
@@ -672,292 +577,16 @@ export function setupWebSocket(httpServer: HTTPServer) {
       }
     });
 
-    // ============== CALL EVENTS (WebRTC Signaling) ==============
-
-    socket.on('call:initiate', async (data) => {
-      try {
-        const { recipient_id, call_type, sdp_offer } = data;
-
-        if (!recipient_id || !['audio', 'video'].includes(call_type)) {
-          return socket.emit('call:error', { message: 'Invalid call parameters' });
-        }
-
-        // Check if caller is already in a call
-        if (userActiveCalls.has(userId)) {
-          return socket.emit('call:error', { message: 'You are already in a call' });
-        }
-
-        // Check if recipient is already in a call
-        if (userActiveCalls.has(recipient_id)) {
-          return socket.emit('call:error', { message: 'User is busy on another call', code: 'USER_BUSY' });
-        }
-
-        // Verify recipient exists
-        const recipient = await prisma.user.findUnique({
-          where: { id: recipient_id },
-          select: { id: true }
-        });
-        if (!recipient) {
-          return socket.emit('call:error', { message: 'User not found' });
-        }
-
-        const initiator = await prisma.user.findUnique({
-          where: { id: userId },
-          select: {
-            username: true,
-            profile: { select: { display_name: true, avatar_url: true } }
-          }
-        });
-
-        const callerUsername = initiator?.profile?.display_name || initiator?.username || 'Unknown User';
-
-        // Find existing conversation for context
-        const existingConv = await prisma.conversation.findFirst({
-          where: {
-            type: 'one_to_one',
-            AND: [
-              { participants: { some: { user_id: userId } } },
-              { participants: { some: { user_id: recipient_id } } },
-            ]
-          },
-          select: { id: true }
-        });
-
-        const call = await prisma.call.create({
-          data: {
-            initiator_id: userId,
-            call_type: call_type as CallType,
-            status: 'ringing' as CallStatus,
-            conversation_id: existingConv?.id || null,
-            participants: {
-              create: [
-                { user_id: userId, joined_at: new Date() },
-                { user_id: recipient_id }
-              ]
-            }
-          }
-        });
-
-        // Track active call for both participants
-        userActiveCalls.set(userId, call.id);
-        userActiveCalls.set(recipient_id, call.id);
-        callParticipantMap.set(call.id, new Set([userId, recipient_id]));
-
-        // Join call-specific room for signaling
-        socket.join(`call:${call.id}`);
-
-        // Check if recipient is online
-        const recipientOnline = userSockets.has(recipient_id);
-
-        // Send call offer to recipient
-        io.to(`user:${recipient_id}`).emit('call:incoming', {
-          call_id: call.id,
-          caller_id: userId,
-          caller_username: callerUsername,
-          caller_avatar: initiator?.profile?.avatar_url || null,
-          call_type,
-          sdp_offer,
-          ice_servers: getIceServers(),
-        });
-
-        // Push notification for incoming call if recipient is offline
-        if (!recipientOnline) {
-          pushIncomingCall(recipient_id, callerUsername, call_type, call.id)
-            .catch(err => console.error('Call push notification failed:', err));
-        }
-
-        socket.emit('call:initiated', {
-          call_id: call.id,
-          status: 'ringing',
-          recipient_online: recipientOnline,
-          ice_servers: getIceServers(),
-        });
-
-        // Set ring timeout - auto-mark as missed if not answered
-        const ringTimeout = setTimeout(async () => {
-          const currentCall = await prisma.call.findUnique({
-            where: { id: call.id },
-            select: { status: true }
-          });
-          if (currentCall && currentCall.status === 'ringing') {
-            await endCallWithStatus(call.id, 'missed' as CallStatus, io, 'timeout');
-            // Push missed call notification
-            pushMissedCall(recipient_id, callerUsername, call_type)
-              .catch(err => console.error('Missed call push failed:', err));
-          }
-        }, config.call.ringTimeoutMs);
-
-        callRingTimeouts.set(call.id, ringTimeout);
-      } catch (error) {
-        console.error('Call initiate error:', error);
-        socket.emit('call:error', { message: 'Failed to initiate call' });
-      }
-    });
-
-    socket.on('call:answer', async (data) => {
-      try {
-        const { call_id, sdp_answer } = data;
-
-        clearCallRingTimeout(call_id);
-
-        const call = await prisma.call.findUnique({
-          where: { id: call_id },
-          select: { initiator_id: true, status: true }
-        });
-
-        if (!call) {
-          return socket.emit('call:error', { message: 'Call not found' });
-        }
-
-        // Only allow answering ringing calls
-        if (call.status !== 'ringing') {
-          return socket.emit('call:error', { message: 'Call is no longer available' });
-        }
-
-        await prisma.$transaction([
-          prisma.call.update({
-            where: { id: call_id },
-            data: {
-              status: 'in_progress' as CallStatus,
-              started_at: new Date()
-            }
-          }),
-          prisma.callParticipant.update({
-            where: {
-              call_id_user_id: {
-                call_id,
-                user_id: userId
-              }
-            },
-            data: { joined_at: new Date() }
-          })
-        ]);
-
-        // Join call room
-        socket.join(`call:${call_id}`);
-
-        // Store call start time in Redis for quick duration lookups
-        try {
-          await redis.hSet(`call:${call_id}`, {
-            status: 'in_progress',
-            started_at: Date.now().toString(),
-            participants: JSON.stringify([call.initiator_id, userId]),
-          });
-          await redis.expire(`call:${call_id}`, config.call.maxDurationSecs);
-        } catch (e) {
-          console.error('Failed to store call state in Redis:', e);
-        }
-
-        io.to(`user:${call.initiator_id}`).emit('call:answered', {
-          call_id,
-          sdp_answer,
-          answerer_id: userId,
-        });
-      } catch (error) {
-        console.error('Call answer error:', error);
-        socket.emit('call:error', { message: 'Failed to answer call' });
-      }
-    });
-
-    socket.on('call:ice-candidate', (data) => {
-      const { call_id, candidate, target_id } = data;
-      if (!candidate || !target_id) return;
-      io.to(`user:${target_id}`).emit('call:ice-candidate', {
-        call_id,
-        candidate,
-        from_id: userId,
-      });
-    });
-
-    // WebRTC renegotiation (e.g., screen share toggle, quality change)
-    socket.on('call:renegotiate', async (data) => {
-      const { call_id, sdp_offer, target_id } = data;
-      if (!call_id || !sdp_offer || !target_id) return;
-      io.to(`user:${target_id}`).emit('call:renegotiate', {
-        call_id,
-        sdp_offer,
-        from_id: userId,
-      });
-    });
-
-    socket.on('call:renegotiate-answer', (data) => {
-      const { call_id, sdp_answer, target_id } = data;
-      if (!call_id || !sdp_answer || !target_id) return;
-      io.to(`user:${target_id}`).emit('call:renegotiate-answer', {
-        call_id,
-        sdp_answer,
-        from_id: userId,
-      });
-    });
-
-    // Media state changes (mute/unmute, camera on/off)
-    socket.on('call:media-state', (data) => {
-      const { call_id, target_id, audio, video, screen_sharing } = data;
-      io.to(`user:${target_id}`).emit('call:media-state', {
-        call_id,
-        user_id: userId,
-        audio,
-        video,
-        screen_sharing,
-      });
-    });
-
-    socket.on('call:end', async (data) => {
-      try {
-        const { call_id } = data;
-        if (!call_id) return;
-
-        await endCallWithStatus(call_id, 'ended' as CallStatus, io, userId);
-
-        // Clean up Redis call state
-        try { await redis.del(`call:${call_id}`); } catch (e) { }
-      } catch (error) {
-        console.error('Call end error:', error);
-      }
-    });
-
-    socket.on('call:decline', async (data) => {
-      try {
-        const { call_id } = data;
-        if (!call_id) return;
-
-        clearCallRingTimeout(call_id);
-
-        const call = await prisma.call.findUnique({
-          where: { id: call_id },
-          select: { initiator_id: true, status: true }
-        });
-
-        if (!call || call.status !== 'ringing') {
-          cleanupCallTracking(call_id);
-          return;
-        }
-
-        await prisma.call.update({
-          where: { id: call_id },
-          data: {
-            status: 'declined' as CallStatus,
-            ended_at: new Date()
-          }
-        });
-
-        io.to(`user:${call.initiator_id}`).emit('call:declined', {
-          call_id,
-          declined_by: userId,
-        });
-
-        cleanupCallTracking(call_id);
-      } catch (error) {
-        console.error('Call decline error:', error);
-      }
-    });
-
     // ============== CONVERSATION EVENTS ==============
 
     socket.on('conversation:join', (data) => {
       const { conversation_id } = data;
       socket.join(`conversation:${conversation_id}`);
     });
+
+    // ============== CALL SIGNALING ==============
+
+    registerCallHandlers(io, socket);
 
     // ============== DISCONNECT ==============
 
@@ -970,28 +599,6 @@ export function setupWebSocket(httpServer: HTTPServer) {
         sockets.delete(socket.id);
         if (sockets.size === 0) {
           userSockets.delete(userId);
-
-          // Clean up active calls - end any call this user is in
-          const activeCallId = userActiveCalls.get(userId);
-          if (activeCallId) {
-            // Give a grace period for reconnection before ending the call
-            const disconnectCallTimeout = setTimeout(async () => {
-              // Check if user reconnected
-              if (!userSockets.has(userId)) {
-                const call = await prisma.call.findUnique({
-                  where: { id: activeCallId },
-                  select: { status: true }
-                });
-                if (call && ['ringing', 'in_progress'].includes(call.status)) {
-                  await endCallWithStatus(activeCallId, 'ended' as CallStatus, io, userId);
-                  try { await redis.del(`call:${activeCallId}`); } catch (e) { }
-                }
-              }
-            }, 10000); // 10s grace period for reconnection
-
-            // Store timeout reference for cleanup if user reconnects
-            callRingTimeouts.set(`disconnect:${userId}`, disconnectCallTimeout);
-          }
 
           // Broadcast offline status FIRST before async DB operations
           io.emit('user:offline', { user_id: userId, last_seen: new Date().toISOString() });

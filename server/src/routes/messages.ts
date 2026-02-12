@@ -417,7 +417,8 @@ router.put('/conversations/:conversationId/read-all', authenticate, async (req: 
 // Full-text search must be performed client-side after decryption.
 router.post('/search', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { conversation_id, limit = 20, offset = 0, message_type, before, after } = req.body;
+    const { conversation_id, limit: limitInput, cursor, message_type, before, after } = req.body;
+    const limit = Math.min(parseInt(String(limitInput)) || 20, 50);
 
     const where: any = {
       deleted_at: null,
@@ -431,19 +432,10 @@ router.post('/search', authenticate, async (req: AuthRequest, res: Response) => 
       }
     };
 
-    if (conversation_id) {
-      where.conversation_id = conversation_id;
-    }
-    if (message_type) {
-      where.message_type = message_type;
-    }
-    if (before) {
-      where.created_at = { ...(where.created_at || {}), lt: new Date(before) };
-    }
-    if (after) {
-      where.created_at = { ...(where.created_at || {}), gt: new Date(after) };
-    }
-
+    if (conversation_id) where.conversation_id = conversation_id;
+    if (message_type) where.message_type = message_type;
+    if (before) where.created_at = { ...(where.created_at || {}), lt: new Date(before) };
+    if (after) where.created_at = { ...(where.created_at || {}), gt: new Date(after) };
     const [total, results] = await prisma.$transaction([
       prisma.messages.count({ where }),
       prisma.messages.findMany({
@@ -459,12 +451,19 @@ router.post('/search', authenticate, async (req: AuthRequest, res: Response) => 
           }
         },
         orderBy: { created_at: 'desc' },
-        take: limit,
-        skip: offset
+        take: limit + 1,
+        ...(cursor ? {
+          cursor: { id: cursor },
+          skip: 1
+        } : {})
       })
     ]);
 
-    const formattedResults = results.map(m => ({
+    const hasMore = results.length > limit;
+    const resultBatch = results.slice(0, limit);
+    const nextCursor = hasMore ? resultBatch[limit - 1].id : null;
+
+    const formattedResults = resultBatch.map(m => ({
       message_id: m.id,
       conversation_id: m.conversation_id,
       sender_id: m.sender_id,
@@ -475,7 +474,12 @@ router.post('/search', authenticate, async (req: AuthRequest, res: Response) => 
       sender_display_name: m.sender.profile?.display_name
     }));
 
-    return res.json({ results: formattedResults, total });
+    return res.json({
+      results: formattedResults,
+      total,
+      has_more: hasMore,
+      next_cursor: nextCursor
+    });
   } catch (error) {
     return res.status(500).json({ error: 'Search failed' });
   }
@@ -562,7 +566,10 @@ router.post('/', authenticate, messageSendRateLimit, idempotencyKey, validate(se
     });
 
     // Track message sent metric
-    businessMetrics.messagesSent.inc({ type: message_type || 'text' });
+    businessMetrics.messagesSent.inc({
+      type: message_type || 'text',
+      encryption: 'e2ee' // Zynk is E2EE by default
+    });
 
     return res.status(201).json({
       message_id: message.id,
@@ -571,7 +578,7 @@ router.post('/', authenticate, messageSendRateLimit, idempotencyKey, validate(se
       created_at: message.created_at,
     });
   } catch (error) {
-    logger.error({ error, userId: req.userId }, 'Failed to send message');
+    logger.error({ err: error, userId: req.userId }, 'Failed to send message');
     return res.status(500).json({ error: 'Failed to send message' });
   }
 });
@@ -583,7 +590,7 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
   try {
     const { conversationId } = req.params;
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
-    const before = req.query.before as string;
+    const cursor = req.query.cursor as string;
 
     // Verify user is participant
     const participant = await prisma.conversationParticipant.findUnique({
@@ -606,7 +613,6 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
         deletedFor: {
           none: { user_id: req.userId! }
         },
-        ...(before ? { created_at: { lt: new Date(parseInt(before) * 1000) } } : {})
       },
       include: {
         sender: {
@@ -622,7 +628,11 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
         }
       },
       orderBy: { created_at: 'desc' },
-      take: limit + 1
+      take: limit + 1,
+      ...(cursor ? {
+        cursor: { id: cursor },
+        skip: 1 // Skip the cursor itself to get older messages
+      } : {})
     });
 
     const hasMore = messages.length > limit;
@@ -641,7 +651,14 @@ router.get('/:conversationId', authenticate, async (req: AuthRequest, res: Respo
       sender_avatar: (m as any).sender.profile?.avatar_url
     })).reverse();
 
-    return res.json({ messages: resultMessages, has_more: hasMore });
+    // The cursor for next page is the ID of the oldest message in this batch
+    const nextCursor = hasMore && messages[limit - 1] ? messages[limit - 1].id : null;
+
+    return res.json({
+      messages: resultMessages,
+      has_more: hasMore,
+      next_cursor: nextCursor
+    });
   } catch (error) {
     console.error('Get messages error:', error);
     return res.status(500).json({ error: 'Failed to fetch messages' });
@@ -669,13 +686,13 @@ router.delete('/:messageId', authenticate, async (req: AuthRequest, res: Respons
         where: { id: messageId },
         select: { conversation_id: true }
       });
-      
+
       if (message) {
         // Verify user is a participant in the message's conversation
         const isParticipant = await prisma.conversationParticipant.findFirst({
           where: { conversation_id: message.conversation_id, user_id: req.userId! }
         });
-        
+
         if (isParticipant) {
           // Insert into MessageDeletedFor (upsert in case already deleted)
           await prisma.messageDeletedFor.upsert({

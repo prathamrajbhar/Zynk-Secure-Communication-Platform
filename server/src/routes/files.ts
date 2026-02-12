@@ -144,8 +144,10 @@ router.post('/upload', authenticate, fileUploadRateLimit, upload.single('file'),
       }
     });
 
-    // Track file upload metric
-    businessMetrics.fileUploads.inc({ type: result.mime_type.split('/')[0] || 'other' });
+    // Track file upload metrics
+    const typeLabel = result.mime_type?.split('/')[0] || 'other';
+    businessMetrics.fileUploads.inc({ mime_type: typeLabel });
+    businessMetrics.fileSize.observe(Number(result.file_size));
 
     return res.status(201).json({
       file_id: result.id,
@@ -157,7 +159,7 @@ router.post('/upload', authenticate, fileUploadRateLimit, upload.single('file'),
       created_at: result.created_at,
     });
   } catch (error) {
-    logger.error({ error, userId: (req as any).userId }, 'File upload failed');
+    logger.error({ err: error, userId: (req as any).userId }, 'File upload failed');
     return res.status(500).json({ error: 'Upload failed' });
   }
 });
@@ -259,7 +261,7 @@ router.get('/:fileId/download', authenticate, async (req: AuthRequest, res: Resp
 router.get('/conversation/:conversationId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const cursor = req.query.cursor as string;
 
     const files = await prisma.file.findMany({
       where: {
@@ -274,11 +276,18 @@ router.get('/conversation/:conversationId', authenticate, async (req: AuthReques
         created_at: true
       },
       orderBy: { created_at: 'desc' },
-      take: limit,
-      skip: offset
+      take: limit + 1,
+      ...(cursor ? {
+        cursor: { id: cursor },
+        skip: 1
+      } : {})
     });
 
-    const formattedFiles = files.map(f => ({
+    const hasMore = files.length > limit;
+    const resultFiles = files.slice(0, limit);
+    const nextCursor = hasMore ? resultFiles[limit - 1].id : null;
+
+    const formattedFiles = resultFiles.map(f => ({
       file_id: f.id,
       filename: f.filename,
       file_size: Number(f.file_size),
@@ -286,7 +295,11 @@ router.get('/conversation/:conversationId', authenticate, async (req: AuthReques
       created_at: f.created_at
     }));
 
-    return res.json({ files: formattedFiles });
+    return res.json({
+      files: formattedFiles,
+      has_more: hasMore,
+      next_cursor: nextCursor
+    });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to fetch files' });
   }

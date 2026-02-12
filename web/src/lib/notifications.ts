@@ -89,7 +89,7 @@ function updateFaviconBadge(count: number): void {
   if (!ctx) return;
 
   // Draw base icon (purple square)
-  ctx.fillStyle = '#5b5fc7';
+  ctx.fillStyle = '#2a9df4';
   ctx.beginPath();
   ctx.roundRect(0, 0, 32, 32, 6);
   ctx.fill();

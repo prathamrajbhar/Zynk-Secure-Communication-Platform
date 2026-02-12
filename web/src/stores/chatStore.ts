@@ -738,7 +738,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(state => {
       const convId = message.conversation_id;
       const existing = state.messages[convId] || [];
-      const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
 
       // Check if this is a confirmation of an optimistic message
       const tempId = (message.metadata as { temp_id?: string })?.temp_id || (message as Message & { temp_id?: string }).temp_id;

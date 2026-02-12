@@ -70,6 +70,7 @@ export const config = {
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15 min default
     max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+    wsMax: parseInt(process.env.WS_CONNECTION_RATE_LIMIT_MAX || '10', 10),
     message: process.env.RATE_LIMIT_MESSAGE || 'Too many requests, please try again later.',
   },
 

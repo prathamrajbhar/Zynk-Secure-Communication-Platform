@@ -32,7 +32,6 @@ import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
 import messageRoutes from './routes/messages';
 import groupRoutes from './routes/groups';
-import callRoutes from './routes/calls';
 import fileRoutes from './routes/files';
 import keyRoutes from './routes/keys';
 import keyBackupRoutes from './routes/keyBackup';
@@ -40,6 +39,7 @@ import reportRoutes from './routes/reports';
 import pollRoutes from './routes/polls';
 import adminRoutes from './routes/admin';
 import accountRoutes from './routes/account';
+import callRoutes from './routes/calls';
 
 const app = express();
 const server = http.createServer(app);
@@ -73,8 +73,6 @@ app.use(helmet({
 
 // Simplified security headers (Helmet already sets most of these)
 app.use((req, res, next) => {
-  // Allow camera and microphone for WebRTC voice/video calls
-  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
   // Prevent caching of API responses containing sensitive data
   if (req.path.startsWith('/api/')) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -187,7 +185,6 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/messages', messageRoutes);
 app.use('/api/v1/groups', groupRoutes);
-app.use('/api/v1/calls', callRoutes);
 app.use('/api/v1/files', fileRoutes);
 app.use('/api/v1/keys', keyRoutes);
 app.use('/api/v1/keys', keyBackupRoutes);
@@ -195,6 +192,7 @@ app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/polls', pollRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/account', accountRoutes);
+app.use('/api/v1/calls', callRoutes);
 
 // ========== Health Check Endpoints ==========
 app.get('/api/health', healthSimple);        // Load balancer

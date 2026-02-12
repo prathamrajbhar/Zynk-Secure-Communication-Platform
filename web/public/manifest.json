@@ -4,8 +4,8 @@
   "description": "Privacy-first encrypted messaging, voice/video calls, and file sharing",
   "start_url": "/chat",
   "display": "standalone",
-  "background_color": "#0a0a0f",
-  "theme_color": "#5b5fc7",
+  "background_color": "#0e1621",
+  "theme_color": "#2a9df4",
   "orientation": "any",
   "categories": ["social", "communication"],
   "icons": [

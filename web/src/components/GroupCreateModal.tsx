@@ -1,174 +1,216 @@
+// ═══════════════════════════════════════════════════════
+// ZYNK UI — Group Create Modal (HeroUI v7)
+// ═══════════════════════════════════════════════════════
+
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
-import { X, Search, Loader2, Users, Check, ArrowLeft, ArrowRight } from 'lucide-react';
-import { getInitials, cn, getAvatarColor } from '@/lib/utils';
+import {
+  Modal, ModalContent, ModalHeader, ModalBody, ModalFooter,
+  Input, Button, Spinner, Avatar, Chip, Checkbox,
+} from '@heroui/react';
+import { Search, Users, Camera, ArrowRight, ArrowLeft } from 'lucide-react';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
-import { useCryptoStore } from '@/stores/cryptoStore';
+import { showToast } from '@/components/ui';
 
-interface SearchUser { user_id: string; username: string; display_name: string | null; }
+interface UserResult {
+  id: string;
+  username: string;
+  display_name?: string;
+  avatar_url?: string;
+}
 
 export default function GroupCreateModal() {
   const { showGroupCreate, setShowGroupCreate } = useUIStore();
   const { fetchConversations, setActiveConversation } = useChatStore();
-  const [step, setStep] = useState<'details' | 'members'>('details');
-  const [groupName, setGroupName] = useState('');
-  const [groupDescription, setGroupDescription] = useState('');
+  const [step, setStep] = useState<'members' | 'info'>('members');
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchUser[]>([]);
-  const [selectedMembers, setSelectedMembers] = useState<SearchUser[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const [results, setResults] = useState<UserResult[]>([]);
+  const [selected, setSelected] = useState<UserResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  useEffect(() => {
-    if (!showGroupCreate) { setStep('details'); setGroupName(''); setGroupDescription(''); setQuery(''); setResults([]); setSelectedMembers([]); }
-  }, [showGroupCreate]);
-
-  const handleSearch = (value: string) => {
-    setQuery(value);
+  const search = (q: string) => {
+    setQuery(q);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (value.trim().length < 2) { setResults([]); return; }
+    if (!q.trim()) { setResults([]); return; }
     debounceRef.current = setTimeout(async () => {
-      setIsSearching(true);
-      try { const res = await api.get('/users/search', { params: { query: value.trim() } }); setResults(res.data.users || res.data || []); }
-      catch { toast.error('Search failed'); }
-      finally { setIsSearching(false); }
+      setLoading(true);
+      try {
+        const res = await api.get(`/users/search?q=${encodeURIComponent(q)}`);
+        setResults(res.data.users || []);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
     }, 300);
   };
 
-  const toggleMember = (user: SearchUser) => {
-    setSelectedMembers(prev => prev.find(m => m.user_id === user.user_id) ? prev.filter(m => m.user_id !== user.user_id) : [...prev, user]);
+  const toggleUser = (user: UserResult) => {
+    setSelected((prev) =>
+      prev.find((u) => u.id === user.id)
+        ? prev.filter((u) => u.id !== user.id)
+        : [...prev, user],
+    );
   };
 
   const handleCreate = async () => {
-    if (!groupName.trim()) { toast.error('Group name is required'); return; }
-    if (selectedMembers.length === 0) { toast.error('Add at least one member'); return; }
-    setIsCreating(true);
+    if (!groupName.trim() || selected.length === 0) {
+      showToast('error', 'Enter a group name and select members');
+      return;
+    }
+    setCreating(true);
     try {
-      const res = await api.post('/groups', { name: groupName.trim(), description: groupDescription.trim() || null, member_ids: selectedMembers.map(m => m.user_id) });
+      const res = await api.post('/groups', {
+        name: groupName.trim(),
+        member_ids: selected.map((u) => u.id),
+      });
       await fetchConversations();
-      if (res.data.conversation_id) {
-        setActiveConversation(res.data.conversation_id);
-        // Distribute sender key to all group members for E2EE
-        useCryptoStore.getState().distributeGroupSenderKey(res.data.conversation_id).catch(() => {});
-      }
+      if (res.data.conversation_id) setActiveConversation(res.data.conversation_id);
+      showToast('success', 'Group created!');
       setShowGroupCreate(false);
-      toast.success('Group created');
-    } catch { toast.error('Failed to create group'); }
-    finally { setIsCreating(false); }
+    } catch {
+      showToast('error', 'Failed to create group');
+    } finally {
+      setCreating(false);
+    }
   };
 
-  if (!showGroupCreate) return null;
-
   return (
-    <div className="modal-overlay flex items-center justify-center p-4" onClick={() => setShowGroupCreate(false)}>
-      <div className="modal-content bg-[var(--bg-surface)] rounded-xl max-w-md w-full overflow-hidden border border-[var(--border)] shadow-lg" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-[var(--border)]">
-          {step === 'members' && (
-            <button onClick={() => setStep('details')} className="btn-icon text-[var(--text-muted)]">
-              <ArrowLeft className="w-4 h-4" />
-            </button>
+    <Modal isOpen={showGroupCreate} onOpenChange={(open) => setShowGroupCreate(open)} size="md" placement="center" scrollBehavior="inside"
+      classNames={{ base: 'bg-content1 border border-divider', header: 'border-b border-divider', body: 'p-0', footer: 'border-t border-divider' }}>
+      <ModalContent>
+        <ModalHeader className="flex items-center gap-3">
+          {step === 'info' && (
+            <Button isIconOnly variant="light" size="sm" radius="full" onPress={() => setStep('members')} aria-label="Back">
+              <ArrowLeft className="w-5 h-5" />
+            </Button>
           )}
-          <div className="flex items-center gap-2.5 flex-1">
-            <div className="w-8 h-8 rounded-xl bg-violet-500/10 flex items-center justify-center">
-              <Users className="w-4 h-4 text-violet-500" />
-            </div>
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">{step === 'details' ? 'New Group' : 'Add Members'}</h3>
+          <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center">
+            <Users className="w-5 h-5 text-primary" />
           </div>
-          {step === 'members' && selectedMembers.length > 0 && (
-            <span className="text-xs font-semibold text-[var(--accent)] bg-[var(--accent-subtle)] px-2.5 py-1 rounded-full">{selectedMembers.length} selected</span>
-          )}
-          <button onClick={() => setShowGroupCreate(false)} className="btn-icon text-[var(--text-muted)]">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {step === 'details' ? (
-          <div className="p-5 space-y-5">
-            <div className="flex justify-center">
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/20 transition-transform duration-300 hover:scale-105">
-                <Users className="w-8 h-8 text-white" />
-              </div>
-            </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5">Group Name</label>
-              <input type="text" value={groupName} onChange={(e) => setGroupName(e.target.value)}
-                className="input-modern" placeholder="Enter group name" maxLength={100} autoFocus />
-            </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5">Description</label>
-              <textarea value={groupDescription} onChange={(e) => setGroupDescription(e.target.value)}
-                className="input-modern resize-none" placeholder="Optional description" rows={2} maxLength={500} />
-            </div>
-            <button onClick={() => setStep('members')} disabled={!groupName.trim()}
-              className="btn-primary btn-shimmer w-full flex items-center justify-center gap-2 !rounded-xl py-3 font-bold">
-              Continue <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        ) : (
           <div>
-            {selectedMembers.length > 0 && (
-              <div className="px-4 pt-3 flex flex-wrap gap-2">
-                {selectedMembers.map(m => (
-                  <span key={m.user_id} className="inline-flex items-center gap-1.5 bg-[var(--accent-subtle)] text-[var(--accent)] px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all duration-200 hover:shadow-md">
-                    {m.display_name || m.username}
-                    <button onClick={() => toggleMember(m)} className="hover:text-[var(--danger)] transition-colors"><X className="w-3 h-3" /></button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            <div className="p-4">
-              <div className="flex items-center gap-2.5 bg-[var(--bg-wash)] rounded-xl px-4 py-2.5 border border-transparent focus-within:border-[var(--accent-muted)] transition-colors">
-                <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
-                <input type="text" value={query} onChange={(e) => handleSearch(e.target.value)}
-                  className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none"
-                  placeholder="Search users..." />
-              </div>
-            </div>
-
-            <div className="max-h-48 overflow-y-auto scroll-thin">
-              {isSearching ? (
-                <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /></div>
-              ) : results.map(u => {
-                const isSelected = selectedMembers.some(m => m.user_id === u.user_id);
-                return (
-                  <button key={u.user_id} onClick={() => toggleMember(u)}
-                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--hover)] transition-all duration-200 text-left group">
-                    <div className="relative">
-                      <div className={cn('w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm transition-transform duration-200 group-hover:scale-105', getAvatarColor(u.username), isSelected && 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]')}>
-                        {getInitials(u.display_name || u.username)}
-                      </div>
-                      {isSelected && (
-                        <div className="absolute -bottom-0.5 -right-0.5 w-[18px] h-[18px] rounded-full bg-[var(--accent)] flex items-center justify-center border-2 border-[var(--bg-surface)] shadow-sm">
-                          <Check className="w-2.5 h-2.5 text-white" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{u.display_name || u.username}</p>
-                      <p className="text-xs text-[var(--text-muted)] mt-0.5">@{u.username}</p>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="p-4 pt-2">
-              <button onClick={handleCreate} disabled={isCreating || selectedMembers.length === 0}
-                className="btn-primary btn-shimmer w-full flex items-center justify-center gap-2 !rounded-xl py-3 font-bold">
-                {isCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                Create Group
-              </button>
-            </div>
+            <h2 className="text-lg font-bold">{step === 'members' ? 'Add Members' : 'Group Info'}</h2>
+            <p className="text-xs text-default-400 font-normal">
+              {step === 'members' ? `${selected.length} selected` : 'Name your group'}
+            </p>
           </div>
-        )}
-      </div>
-    </div>
+        </ModalHeader>
+
+        <ModalBody>
+          {step === 'members' ? (
+            <>
+              {/* Selected chips */}
+              {selected.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 px-4 pt-3">
+                  {selected.map((u) => (
+                    <Chip key={u.id} variant="flat" color="primary" size="sm" onClose={() => toggleUser(u)}>
+                      {u.display_name || u.username}
+                    </Chip>
+                  ))}
+                </div>
+              )}
+
+              <div className="px-4 py-3">
+                <Input
+                  value={query}
+                  onValueChange={search}
+                  placeholder="Search users..."
+                  variant="flat"
+                  size="sm"
+                  radius="lg"
+                  startContent={<Search className="w-4 h-4 text-default-400" />}
+                  classNames={{ inputWrapper: 'bg-content2' }}
+                  autoFocus
+                />
+              </div>
+
+              <div className="max-h-[280px] overflow-y-auto">
+                {loading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Spinner size="md" color="primary" />
+                  </div>
+                ) : results.length > 0 ? (
+                  results.map((u) => {
+                    const isSelected = selected.some((s) => s.id === u.id);
+                    return (
+                      <button
+                        key={u.id}
+                        onClick={() => toggleUser(u)}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-content2 transition-colors"
+                      >
+                        <Avatar name={(u.display_name || u.username).slice(0, 2).toUpperCase()} src={u.avatar_url} size="sm" />
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="text-sm font-semibold text-foreground truncate">{u.display_name || u.username}</p>
+                          <p className="text-xs text-default-400">@{u.username}</p>
+                        </div>
+                        <Checkbox isSelected={isSelected} color="primary" size="sm" />
+                      </button>
+                    );
+                  })
+                ) : query ? (
+                  <p className="text-center text-sm text-default-400 py-8">No users found</p>
+                ) : (
+                  <p className="text-center text-sm text-default-400 py-8">Search for users to add</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="p-5 space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center cursor-pointer hover:bg-primary/20 transition-colors">
+                  <Camera className="w-6 h-6 text-primary" />
+                </div>
+                <div className="flex-1">
+                  <Input
+                    value={groupName}
+                    onValueChange={setGroupName}
+                    label="Group Name"
+                    variant="bordered"
+                    size="sm"
+                    placeholder="Enter group name"
+                    maxLength={64}
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-default-400 uppercase tracking-wide mb-2">
+                  Members ({selected.length})
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {selected.map((u) => (
+                    <div key={u.id} className="flex items-center gap-1.5 text-xs text-default-500">
+                      <Avatar name={(u.display_name || u.username).slice(0, 2).toUpperCase()} src={u.avatar_url} size="sm" className="w-6 h-6" />
+                      <span>{u.display_name || u.username}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </ModalBody>
+
+        <ModalFooter>
+          {step === 'members' ? (
+            <Button color="primary" fullWidth radius="lg" isDisabled={selected.length === 0} onPress={() => setStep('info')}
+              endContent={<ArrowRight className="w-4 h-4" />} className="font-semibold">
+              Next
+            </Button>
+          ) : (
+            <Button color="primary" fullWidth radius="lg" isDisabled={creating || !groupName.trim()} isLoading={creating}
+              onPress={handleCreate} className="font-semibold">
+              Create Group
+            </Button>
+          )}
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 }

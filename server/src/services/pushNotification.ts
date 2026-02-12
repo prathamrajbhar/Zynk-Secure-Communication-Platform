@@ -143,7 +143,6 @@ export async function pushNewMessage(
     messageType === 'image' ? '📷 Photo'
     : messageType === 'file' ? '📎 File'
     : messageType === 'audio' ? '🎤 Voice message'
-    : messageType === 'video' ? '🎬 Video'
     : 'New message'; // Generic — never show actual text
 
   await sendPushToUser(recipientId, {
@@ -153,48 +152,6 @@ export async function pushNewMessage(
     data: {
       type: 'message',
       conversation_id: conversationId,
-    },
-  });
-}
-
-/**
- * Send an incoming call push notification
- */
-export async function pushIncomingCall(
-  recipientId: string,
-  callerName: string,
-  callType: 'audio' | 'video',
-  callId: string
-): Promise<void> {
-  await sendPushToUser(recipientId, {
-    title: `Incoming ${callType} call`,
-    body: `${callerName} is calling you`,
-    tag: `call-${callId}`,
-    sound: 'ringtone',
-    data: {
-      type: 'call',
-      call_type: callType,
-      call_id: callId,
-      caller_name: callerName,
-    },
-  });
-}
-
-/**
- * Send a missed call push notification
- */
-export async function pushMissedCall(
-  recipientId: string,
-  callerName: string,
-  callType: 'audio' | 'video'
-): Promise<void> {
-  await sendPushToUser(recipientId, {
-    title: 'Missed call',
-    body: `${callerName} tried to call you (${callType})`,
-    tag: `missed-call-${Date.now()}`,
-    data: {
-      type: 'missed_call',
-      caller_name: callerName,
     },
   });
 }

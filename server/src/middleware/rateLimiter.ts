@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { redis, isRedisAvailable } from '../db/redis';
 import { createServiceLogger } from '../lib/logger';
+import { config } from '../config';
 
 const log = createServiceLogger('rate-limiter');
 
@@ -56,21 +57,21 @@ async function checkRateLimit(
   try {
     // Use Redis pipeline for atomic operation
     const multi = redis.multi();
-    
+
     // Remove entries outside the window
     multi.zRemRangeByScore(key, 0, windowStart);
-    
+
     // Count current entries in window
     multi.zCard(key);
-    
+
     // Add current request
     multi.zAdd(key, { score: now, value: `${now}:${Math.random()}` });
-    
+
     // Set TTL on key
     multi.expire(key, windowSeconds);
-    
+
     const results = await multi.exec();
-    
+
     // results[1] is the count BEFORE adding current request
     const currentCount = (results?.[1] as number) || 0;
     const allowed = currentCount < maxRequests;
@@ -137,25 +138,26 @@ export function distributedRateLimit(config: RateLimitConfig) {
 
 // ======================== Pre-configured Rate Limiters ========================
 
-/** General API rate limit: 100 req/15min per IP */
+/** General API rate limit: configured via RATE_LIMIT_MAX */
 export const apiRateLimit = distributedRateLimit({
-  maxRequests: 100,
-  windowSeconds: 900,
+  maxRequests: config.rateLimit.max,
+  windowSeconds: Math.floor(config.rateLimit.windowMs / 1000),
   keyPrefix: 'api',
+  message: config.rateLimit.message,
 });
 
-/** Auth login rate limit: 5 attempts/15min per IP */
+/** Auth login rate limit: configured via AUTH_RATE_LIMIT_MAX_LOGIN */
 export const loginRateLimit = distributedRateLimit({
-  maxRequests: 5,
-  windowSeconds: 900,
+  maxRequests: config.authRateLimit.maxLogin,
+  windowSeconds: Math.floor(config.authRateLimit.windowMs / 1000),
   keyPrefix: 'login',
   message: 'Too many login attempts. Please try again later.',
 });
 
-/** Auth register rate limit: 3 attempts/15min per IP */
+/** Auth register rate limit: configured via AUTH_RATE_LIMIT_MAX_REGISTER */
 export const registerRateLimit = distributedRateLimit({
-  maxRequests: 3,
-  windowSeconds: 900,
+  maxRequests: config.authRateLimit.maxRegister,
+  windowSeconds: Math.floor(config.authRateLimit.windowMs / 1000),
   keyPrefix: 'register',
   message: 'Too many registration attempts. Please try again later.',
 });
@@ -178,10 +180,10 @@ export const fileUploadRateLimit = distributedRateLimit({
   message: 'Too many file uploads. Please try again later.',
 });
 
-/** WebSocket connection rate limit: 10 connections/min per IP */
+/** WebSocket connection rate limit: configured via WS_CONNECTION_RATE_LIMIT_MAX */
 export const wsConnectionRateLimit = async (ip: string): Promise<boolean> => {
   if (!isRedisAvailable()) return true;
   const key = `rl:ws:${ip}`;
-  const { allowed } = await checkRateLimit(key, 10, 60);
+  const { allowed } = await checkRateLimit(key, config.rateLimit.wsMax, 60);
   return allowed;
 };

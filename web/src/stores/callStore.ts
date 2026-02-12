@@ -12,7 +12,7 @@
 import { create } from 'zustand';
 import { RTCManager, type IceServer, type RTCConnectionState } from '@/lib/webrtc/RTCManager';
 import { MediaManager, type AudioLevel } from '@/lib/webrtc/MediaManager';
-import { QualityMonitor, type CallQuality, type QualitySnapshot } from '@/lib/webrtc/QualityMonitor';
+import { QualityMonitor, type CallQuality } from '@/lib/webrtc/QualityMonitor';
 import { getSocket, SOCKET_EVENTS } from '@/lib/socket';
 import api from '@/lib/api';
 import logger from '@/lib/logger';
@@ -250,14 +250,15 @@ export const useCallStore = create<CallState>((set, get) => ({
         set({ localAudioLevel: level });
       });
 
-    } catch (error: any) {
-      logger.error('[Call] Initiate failed:', error);
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('[Call] Initiate failed:', err);
       cleanup();
 
       let errorMsg = 'Failed to start call';
-      if (error.message === 'PERMISSION_DENIED') errorMsg = 'Camera/microphone permission denied';
-      else if (error.message === 'DEVICE_NOT_FOUND') errorMsg = 'No camera/microphone found';
-      else if (error.message === 'DEVICE_IN_USE') errorMsg = 'Camera/microphone is in use by another app';
+      if (err.message === 'PERMISSION_DENIED') errorMsg = 'Camera/microphone permission denied';
+      else if (err.message === 'DEVICE_NOT_FOUND') errorMsg = 'No camera/microphone found';
+      else if (err.message === 'DEVICE_IN_USE') errorMsg = 'Camera/microphone is in use by another app';
 
       set({ ...initialState, error: errorMsg });
     }
@@ -366,12 +367,13 @@ export const useCallStore = create<CallState>((set, get) => ({
         set({ localAudioLevel: level });
       });
 
-    } catch (error: any) {
-      logger.error('[Call] Answer failed:', error);
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('[Call] Answer failed:', err);
       cleanup();
 
       let errorMsg = 'Failed to answer call';
-      if (error.message === 'PERMISSION_DENIED') errorMsg = 'Camera/microphone permission denied';
+      if (err.message === 'PERMISSION_DENIED') errorMsg = 'Camera/microphone permission denied';
 
       set({ ...initialState, error: errorMsg });
     }
@@ -481,7 +483,7 @@ export const useCallStore = create<CallState>((set, get) => ({
   // ════════════════════════════════════════════
   // HANDLE CALL DECLINED
   // ════════════════════════════════════════════
-  handleCallDeclined: (_data) => {
+  handleCallDeclined: () => {
     cleanup();
     set({ ...initialState, status: 'ended', error: 'Call declined' });
 

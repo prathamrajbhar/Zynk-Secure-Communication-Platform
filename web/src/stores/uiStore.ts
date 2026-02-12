@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ColorScheme = 'violet' | 'ocean' | 'emerald' | 'rose' | 'amber' | 'crimson';
+export type ColorScheme = 'azure' | 'violet' | 'ocean' | 'emerald' | 'rose' | 'amber' | 'crimson';
 export type ChatBubbleStyle = 'gradient' | 'solid' | 'minimal';
 export type FontSize = 'small' | 'medium' | 'large';
 export type ChatBackground = 'default' | 'dots' | 'grid' | 'waves' | 'gradient' | 'bubbles' | 'doodle';
@@ -8,12 +8,13 @@ export type MuteDuration = '1h' | '8h' | '1w' | 'forever';
 export type SidebarFilter = 'all' | 'unread' | 'groups' | 'media';
 
 export const COLOR_SCHEMES: { id: ColorScheme; name: string; color: string }[] = [
-  { id: 'violet', name: 'Indigo', color: '#5b5fc7' },
-  { id: 'ocean', name: 'Blue', color: '#1a73e8' },
-  { id: 'emerald', name: 'Green', color: '#0d9e5f' },
-  { id: 'rose', name: 'Pink', color: '#e8366d' },
-  { id: 'amber', name: 'Amber', color: '#e68a00' },
-  { id: 'crimson', name: 'Red', color: '#d93025' },
+  { id: 'azure', name: 'Azure', color: '#2a9df4' },
+  { id: 'violet', name: 'Violet', color: '#7c3aed' },
+  { id: 'ocean', name: 'Ocean', color: '#2563eb' },
+  { id: 'emerald', name: 'Emerald', color: '#16a34a' },
+  { id: 'rose', name: 'Rose', color: '#e11d48' },
+  { id: 'amber', name: 'Amber', color: '#d97706' },
+  { id: 'crimson', name: 'Crimson', color: '#dc2626' },
 ];
 
 export const CHAT_BACKGROUNDS: { id: ChatBackground; name: string; label: string; preview: string }[] = [
@@ -80,7 +81,7 @@ function applyTheme(theme: string, scheme: string) {
 
 export const useUIStore = create<UIState>((set) => ({
   theme: 'dark',
-  colorScheme: 'violet',
+  colorScheme: 'azure',
   bubbleStyle: 'gradient',
   fontSize: 'medium',
   compactMode: false,
@@ -170,7 +171,7 @@ export const useUIStore = create<UIState>((set) => ({
   hydrateUI: () => {
     if (typeof window === 'undefined') return;
     const theme = (localStorage.getItem('zynk-theme') || 'dark') as 'light' | 'dark';
-    const colorScheme = (localStorage.getItem('zynk-color-scheme') || 'violet') as ColorScheme;
+    const colorScheme = (localStorage.getItem('zynk-color-scheme') || 'azure') as ColorScheme;
     const bubbleStyle = (localStorage.getItem('zynk-bubble-style') || 'gradient') as ChatBubbleStyle;
     const fontSize = (localStorage.getItem('zynk-font-size') || 'medium') as FontSize;
     const compactMode = localStorage.getItem('zynk-compact-mode') === 'true';

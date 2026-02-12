@@ -73,16 +73,17 @@ export class MediaManager {
         video: this.localStream.getVideoTracks().length,
       });
       return this.localStream;
-    } catch (error: any) {
-      logger.error('[Media] getUserMedia failed:', error);
+    } catch (error: unknown) {
+      const err = error as { name?: string; message?: string };
+      logger.error('[Media] getUserMedia failed:', err);
 
-      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         throw new Error('PERMISSION_DENIED');
       }
-      if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+      if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         throw new Error('DEVICE_NOT_FOUND');
       }
-      if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+      if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
         throw new Error('DEVICE_IN_USE');
       }
       throw error;
