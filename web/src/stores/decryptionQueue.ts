@@ -36,8 +36,20 @@ interface DecryptionQueueState {
   getQueueStats: () => { total: number; recent: number; old: number };
 }
 
-const MAX_RETRY_ATTEMPTS = 10;
-const RETRY_INTERVALS = [1000, 2000, 5000, 10000, 30000, 60000, 300000, 600000, 1800000, 3600000]; // 1s to 1h
+const MAX_RETRY_ATTEMPTS = 100;  // Effectively unlimited — never permanently give up
+const RETRY_INTERVALS = [
+  1000,      // 1s
+  2000,      // 2s
+  5000,      // 5s
+  10000,     // 10s
+  30000,     // 30s
+  60000,     // 1 min
+  300000,    // 5 min
+  600000,    // 10 min
+  1800000,   // 30 min
+  3600000,   // 1 hour
+  7200000,   // 2 hours — all retries after this use 2h intervals
+];
 const QUEUE_STORAGE_KEY = 'zynk_decryption_queue';
 
 // Load persisted queue from localStorage
@@ -156,9 +168,30 @@ export const useDecryptionQueue = create<DecryptionQueueState>((set, get) => ({
           );
         }
 
-        // Success! Update the message in chat store
-        chatStore.updateMessageContent(messageId, decryptedContent);
-        processedIds.push(messageId);
+        // Only count as success if we got REAL content (not a placeholder)
+        const isPlaceholder = decryptedContent.startsWith('🔒') ||
+          decryptedContent.startsWith('🔐') ||
+          decryptedContent.startsWith('⏳') ||
+          decryptedContent.startsWith('[Decryption') ||
+          decryptedContent.startsWith('[Cannot');
+
+        if (!isPlaceholder) {
+          // Success! Update the message in chat store
+          chatStore.updateMessageContent(messageId, decryptedContent);
+          processedIds.push(messageId);
+          logger.info(`[DecryptQueue] Successfully decrypted message ${messageId} after ${failedDecryption.attempts} attempts`);
+        } else {
+          // Still a placeholder — update attempts but keep in queue
+          const updatedDecryption: FailedDecryption = {
+            ...failedDecryption,
+            attempts: failedDecryption.attempts + 1,
+            lastAttempt: now,
+            error: 'Decryption returned placeholder'
+          };
+          const newQueue = new Map(failedDecryptions);
+          newQueue.set(messageId, updatedDecryption);
+          set({ failedDecryptions: newQueue });
+        }
 
         logger.info(`[DecryptQueue] Successfully decrypted message ${messageId} after ${failedDecryption.attempts} attempts`);
 

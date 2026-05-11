@@ -67,6 +67,14 @@ export function formatLastMessage(content: string, length: number = 40): string 
       if (data.v === 3 && data.ct) {
         return '🔒 Encrypted message';
       }
+      // v4 group encrypted envelope
+      if (data.v === 4 && data.ct) {
+        return '🔒 Encrypted message';
+      }
+      // v5 epoch-based encrypted envelope
+      if (data.v === 5 && data.ct) {
+        return '🔒 Encrypted message';
+      }
       // legacy encrypted message
       if (data.ciphertext) {
         return '🔒 Encrypted message';

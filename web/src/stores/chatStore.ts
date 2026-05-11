@@ -1180,6 +1180,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const needsDecrypt = !m.content
         || m.content.startsWith('[Decryption failed')
         || m.content.startsWith('[Cannot decrypt')
+        || m.content.startsWith('🔒')
+        || m.content.startsWith('🔐')
+        || m.content.startsWith('⏳')
         || isEncryptedMessage(m.content);
       if (!needsDecrypt || !m.encrypted_content || m.isOptimistic) return m;
 
@@ -1193,7 +1196,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return m;
         }
         // Only count as changed if we got real content back
-        if (!decrypted.startsWith('[Decryption failed') && !decrypted.startsWith('[Cannot decrypt')) {
+        if (!decrypted.startsWith('[Decryption failed')
+          && !decrypted.startsWith('[Cannot decrypt')
+          && !decrypted.startsWith('🔒')
+          && !decrypted.startsWith('🔐')
+          && !decrypted.startsWith('⏳')) {
           changed = true;
           return { ...m, content: decrypted };
         }
@@ -1238,7 +1245,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   /**
    * Safely decrypt a message with proper error handling and queue fallback.
-   * Never returns "[Decryption failed]" - always returns meaningful content.
+   * NEVER returns "[Decryption failed]" — always returns meaningful content
+   * or a retry placeholder. Messages are queued for background retry.
    */
   safeDecryptMessage: async (messageId: string, conversationId: string, senderId: string, encryptedContent: string, isGroup = false): Promise<string> => {
     const cryptoStore = useCryptoStore.getState();
@@ -1259,7 +1267,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         decrypted = await cryptoStore.decrypt(senderId, encryptedContent);
       }
 
-      // Success - remove from failed queue if it was there
+      // Check if we got a real result or a placeholder
+      const isPlaceholder = decrypted.startsWith('🔒') ||
+        decrypted.startsWith('🔐') ||
+        decrypted.startsWith('⏳') ||
+        decrypted.startsWith('[Decryption') ||
+        decrypted.startsWith('[Cannot');
+
+      if (isPlaceholder) {
+        // Queue for retry — the decrypt pipeline already tried all strategies
+        queueStore.addFailedDecryption(messageId, conversationId, senderId, encryptedContent, 'All strategies exhausted');
+        return decrypted; // Return the placeholder (not "[Decryption failed]")
+      }
+
+      // Real success - remove from failed queue if it was there
       queueStore.removeFailedDecryption(messageId);
       return decrypted;
 

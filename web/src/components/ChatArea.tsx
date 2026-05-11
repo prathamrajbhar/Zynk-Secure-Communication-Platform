@@ -177,6 +177,55 @@ export default function ChatArea() {
     setEditingMessage(null);
   }, []);
 
+  // Handle file upload
+  const handleFileUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    
+    for (const file of Array.from(files)) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('conversation_id', activeConversation || '');
+        
+        // Upload file first
+        const uploadResponse = await api.post('/files/upload', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        
+        const fileInfo = uploadResponse.data;
+        
+        // Create file download URL
+        const fileUrl = `/api/v1/files/${fileInfo.file_id}/download`;
+        const thumbnailUrl = fileInfo.thumbnail_path ? `/api/v1/files/${fileInfo.file_id}/thumbnail` : null;
+        
+        // Create file message content with metadata
+        const fileMetadata = {
+          file_id: fileInfo.file_id,
+          filename: fileInfo.filename,
+          size: fileInfo.file_size,
+          mime_type: fileInfo.mime_type,
+          url: fileUrl,
+          thumbnail_url: thumbnailUrl,
+          content_hash: fileInfo.content_hash,
+        };
+        
+        // Determine message type
+        const isImage = fileInfo.mime_type?.startsWith('image/');
+        const messageType = isImage ? 'image' : 'file';
+        
+        // Send message with file metadata as encrypted content
+        const fileContent = JSON.stringify(fileMetadata);
+        if (activeConversation) {
+          sendMessageOptimistic(activeConversation, fileContent, messageType);
+        }
+        
+      } catch (err) {
+        console.error('File upload failed:', err);
+        // TODO: Show user-friendly error notification
+      }
+    }
+  }, [activeConversation, sendMessageOptimistic]);
+
   // Group messages by date
   const groupedMessages = useMemo(() => {
     const groups: { date: string; messages: Message[] }[] = [];
@@ -463,6 +512,7 @@ export default function ChatArea() {
           setEditingMessage(null);
         }}
         onTyping={(isTyping) => sendTyping(activeConversation, isTyping)}
+        onFileUpload={handleFileUpload}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
         editingMessage={editingMessage}
@@ -839,11 +889,12 @@ function PollCard({ poll, messageId }: {
 
 /* ─── Chat Input ─── */
 function ChatInput({
-  conversationId, draft, onDraftChange, onSend, onTyping,
+  conversationId, draft, onDraftChange, onSend, onTyping, onFileUpload,
   replyTo, onCancelReply, editingMessage, onCancelEdit, onEditMessage,
 }: {
   conversationId: string; draft: string; onDraftChange: (text: string) => void;
   onSend: (text: string, replyToId?: string) => void; onTyping: (isTyping: boolean) => void;
+  onFileUpload: (files: FileList | null) => void;
   replyTo: Message | null; onCancelReply: () => void;
   editingMessage: Message | null; onCancelEdit: () => void;
   onEditMessage: (messageId: string, newContent: string) => Promise<void>;
@@ -932,23 +983,6 @@ function ChatInput({
     if (e.key === 'Escape') {
       if (editingMessage) onCancelEdit();
       if (replyTo) onCancelReply();
-    }
-  };
-
-  const handleFileUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setShowAttachMenu(false);
-    for (const file of Array.from(files)) {
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('conversation_id', conversationId);
-        await api.post('/files/upload', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
-      } catch (err) {
-        console.error('File upload failed:', err);
-      }
     }
   };
 
@@ -1048,8 +1082,8 @@ function ChatInput({
           )}
         </div>
 
-        <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => handleFileUpload(e.target.files)} />
-        <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e.target.files)} />
+        <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => onFileUpload(e.target.files)} />
+        <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFileUpload(e.target.files)} />
 
         {/* Text input */}
         <div className="flex-1 relative">

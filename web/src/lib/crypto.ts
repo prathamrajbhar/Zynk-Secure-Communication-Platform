@@ -43,6 +43,36 @@ export interface EncryptedEnvelope {
   sk: string;   // sender's public key (base64, raw format)
 }
 
+// ========== Envelope key extraction ==========
+
+/**
+ * Extract the sender's public key from any encrypted envelope (v3, v4, v5).
+ * This is the key the sender used AT ENCRYPTION TIME — critical for decryption
+ * when the sender's key has since rotated.
+ *
+ * WhatsApp/Signal principle: the message itself carries enough info to decrypt.
+ */
+export function extractEnvelopeSenderKey(envelopeJson: string): string | null {
+  if (!envelopeJson || typeof envelopeJson !== 'string') return null;
+  try {
+    const env = JSON.parse(envelopeJson.trim());
+    if ((env.v === 3 || env.v === 4 || env.v === 5) && typeof env.sk === 'string' && env.sk.length > 0) {
+      return env.sk;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute a short fingerprint of a public key for cache indexing.
+ * Uses first 16 chars of base64 (enough for uniqueness in practice).
+ */
+export function publicKeyFingerprint(publicKeyB64: string): string {
+  return publicKeyB64.slice(0, 16);
+}
+
 // ========== Key pair generation ==========
 
 export async function generateKeyPair(): Promise<{ publicKey: string; privateKey: string }> {
@@ -153,6 +183,25 @@ export async function decryptText(
     base64ToArrayBuffer(env.ct),
   );
   return new TextDecoder().decode(pt);
+}
+
+// ========== Direct derivation from raw public key (no server fetch) ==========
+
+/**
+ * Derive AES key directly from a raw public key string.
+ * Used when we have the sender's public key from the envelope itself,
+ * bypassing the need to fetch from server.
+ * This is the KEY FIX for decryption failures after key rotation.
+ */
+export async function deriveAESKeyDirect(
+  myPrivateKeyB64: string,
+  theirPublicKeyB64: string,
+  epoch?: number,
+): Promise<CryptoKey> {
+  if (epoch && epoch > 0) {
+    return deriveEpochAESKey(myPrivateKeyB64, theirPublicKeyB64, epoch);
+  }
+  return deriveAESKey(myPrivateKeyB64, theirPublicKeyB64);
 }
 
 // ========== Envelope validation ==========

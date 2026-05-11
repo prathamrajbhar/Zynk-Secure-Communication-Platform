@@ -24,6 +24,7 @@ import {
   generateKeyPair,
   buildKeyUploadPayload,
   deriveAESKey,
+  deriveAESKeyDirect,
   decryptText,
   isValidEncryptedMessage,
   isGroupEncryptedMessage,
@@ -46,6 +47,11 @@ import {
   exportAESKey,
   encryptKeyForArchive,
   base64ToArrayBuffer,
+  // Envelope-aware helpers
+  extractEnvelopeSenderKey,
+  publicKeyFingerprint,
+  importAESKey,
+  decryptKeyFromArchive,
 } from '@/lib/crypto';
 
 // ========== localStorage helpers ==========
@@ -63,11 +69,19 @@ function loadKeys(userId: string): { publicKey: string; privateKey: string } | n
 }
 
 export function clearKeys(userId: string) {
+  // Save current keys to history BEFORE clearing (never lose keys)
+  const existing = loadKeys(userId);
+  if (existing) {
+    appendKeyHistory(userId, existing.publicKey, existing.privateKey);
+  }
+
   localStorage.removeItem(`zynk_pub_${userId}`);
   localStorage.removeItem(`zynk_priv_${userId}`);
   localStorage.removeItem(`zynk_group_own_${userId}`);
   localStorage.removeItem(`zynk_group_received_${userId}`);
   localStorage.removeItem(`zynk_epoch_${userId}`);
+  // NOTE: We intentionally DO NOT clear key_history or known_remote_keys
+  // Old keys must persist forever for decryption of historical messages
 }
 
 // ========== Group sender key persistence ==========
@@ -109,6 +123,89 @@ function loadGroupReceivedKeysRaw(userId: string): Map<string, Map<string, Persi
     }
     return result;
   } catch { return new Map(); }
+}
+
+// ========== Key History Persistence (NEVER lose old keys) ==========
+//
+// WhatsApp/Signal principle: Identity keys are permanent.
+// When keys rotate, old key pairs are preserved so historical messages
+// encrypted with old keys remain decryptable forever.
+
+interface HistoricalKeyPair {
+  publicKey: string;
+  privateKey: string;
+  createdAt: number;
+}
+
+function saveKeyHistory(userId: string, history: HistoricalKeyPair[]) {
+  try {
+    localStorage.setItem(`zynk_key_history_${userId}`, JSON.stringify(history));
+  } catch { /* non-fatal */ }
+}
+
+function loadKeyHistory(userId: string): HistoricalKeyPair[] {
+  try {
+    const raw = localStorage.getItem(`zynk_key_history_${userId}`);
+    if (!raw) return [];
+    return JSON.parse(raw) as HistoricalKeyPair[];
+  } catch { return []; }
+}
+
+/**
+ * Add a key pair to history. Deduplicates by public key fingerprint.
+ * Never removes keys — only appends.
+ */
+function appendKeyHistory(userId: string, publicKey: string, privateKey: string) {
+  const history = loadKeyHistory(userId);
+  const fp = publicKeyFingerprint(publicKey);
+  if (history.some(h => publicKeyFingerprint(h.publicKey) === fp)) return; // already stored
+  history.push({ publicKey, privateKey, createdAt: Date.now() });
+  saveKeyHistory(userId, history);
+}
+
+// ========== All-known-public-keys cache (per remote user) ==========
+//
+// Stores every public key we've ever seen for a remote user.
+// Used as fallback during decryption when the current key doesn't work.
+
+function saveKnownRemoteKeys(userId: string, keys: Map<string, Set<string>>) {
+  try {
+    const obj: Record<string, string[]> = {};
+    keys.forEach((keySet, remoteUserId) => {
+      obj[remoteUserId] = Array.from(keySet);
+    });
+    localStorage.setItem(`zynk_known_remote_keys_${userId}`, JSON.stringify(obj));
+  } catch { /* non-fatal */ }
+}
+
+function loadKnownRemoteKeys(userId: string): Map<string, Set<string>> {
+  try {
+    const raw = localStorage.getItem(`zynk_known_remote_keys_${userId}`);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as Record<string, string[]>;
+    const result = new Map<string, Set<string>>();
+    for (const [remoteUserId, keys] of Object.entries(parsed)) {
+      result.set(remoteUserId, new Set(keys));
+    }
+    return result;
+  } catch { return new Map(); }
+}
+
+/**
+ * Track a known public key for a remote user.
+ * Called whenever we see or fetch a key for someone.
+ */
+function trackRemoteKey(userId: string, remoteUserId: string, publicKey: string) {
+  const allKnown = loadKnownRemoteKeys(userId);
+  let keys = allKnown.get(remoteUserId);
+  if (!keys) {
+    keys = new Set();
+    allKnown.set(remoteUserId, keys);
+  }
+  if (!keys.has(publicKey)) {
+    keys.add(publicKey);
+    saveKnownRemoteKeys(userId, allKnown);
+  }
 }
 
 // ========== Initialization Deduplication & Ready Gate ==========
@@ -241,6 +338,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       if (existing) {
         logger.debug('[E2EE] Loaded existing key pair from localStorage');
 
+        // Save to key history (idempotent — deduplicates)
+        appendKeyHistory(userId, existing.publicKey, existing.privateKey);
+
         // Ensure server backup exists (non-blocking)
         if (password) {
           ensureServerBackup(existing.privateKey, existing.publicKey, password).catch(e =>
@@ -290,6 +390,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
             storeKeys(userId, publicKey, privateKey);
             localStorage.setItem(`zynk_epoch_${userId}`, String(keyVersion));
 
+            // Save to key history (so we never lose restored keys)
+            appendKeyHistory(userId, publicKey, privateKey);
+
             // Re-sync identity key with server
             try {
               const payload = await buildKeyUploadPayload(publicKey);
@@ -336,6 +439,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         storeKeys(userId, kp.publicKey, kp.privateKey);
         localStorage.setItem(`zynk_epoch_${userId}`, '1');
         logger.debug('[E2EE] Keys generated and uploaded');
+
+        // Save to key history
+        appendKeyHistory(userId, kp.publicKey, kp.privateKey);
 
         // Create server backup if password is available
         if (password) {
@@ -399,88 +505,171 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
   /**
    * Decrypt ciphertext from a remote user (1:1).
-   * Handles both v3 (legacy) and v5 (epoch-based) envelopes.
+   *
+   * ROBUST MULTI-STRATEGY PIPELINE (WhatsApp/Signal-level):
+   *   1. Try cached AES key (fast path)
+   *   2. Try deriving from envelope's embedded sender key (`sk` field)
+   *   3. Try current remote public key from server (fresh fetch)
+   *   4. Try ALL historical local key pairs × envelope sender key
+   *   5. Try archived message keys from server
+   *   6. Try ALL known remote public keys × current private key
+   *
+   * NEVER returns "[Decryption failed]" permanently — queues for retry.
+   * Key principle: the envelope carries the sender's key at encryption time.
    */
   decrypt: async (remoteUserId: string, ciphertextJson: string): Promise<string> => {
-    const { privateKey, aesKeys } = get();
+    const { privateKey, aesKeys, userId } = get();
     if (!privateKey) throw new Error('E2EE not initialized');
 
     if (!isValidEncryptedMessage(ciphertextJson) && !isV5EncryptedMessage(ciphertextJson)) {
       return ciphertextJson;
     }
 
-    // ── v5 epoch-based decryption ───────────────────────────────────
-    if (isV5EncryptedMessage(ciphertextJson)) {
-      const msgEpoch = getEnvelopeEpoch(ciphertextJson);
-      const cacheKey = `${remoteUserId}:e${msgEpoch}`;
-      let aesKey = aesKeys.get(cacheKey);
+    // Extract the sender key embedded in the envelope (key at encryption time)
+    const envelopeSenderKey = extractEnvelopeSenderKey(ciphertextJson);
+    const isV5 = isV5EncryptedMessage(ciphertextJson);
+    const msgEpoch = isV5 ? getEnvelopeEpoch(ciphertextJson) : 0;
 
-      if (!aesKey) {
-        const remotePub = await fetchRemotePublicKey(remoteUserId);
-        if (!remotePub) return '[Cannot decrypt — missing key]';
+    // Track the envelope sender key for future fallback use
+    if (envelopeSenderKey && userId) {
+      trackRemoteKey(userId, remoteUserId, envelopeSenderKey);
+    }
+
+    // ── Strategy 1: Try cached AES key ──────────────────────────────
+    const cacheKey = isV5 ? `${remoteUserId}:e${msgEpoch}` : remoteUserId;
+    const cachedKey = aesKeys.get(cacheKey);
+    if (cachedKey) {
+      try {
+        return isV5
+          ? await decryptTextV5(cachedKey, ciphertextJson)
+          : await decryptText(cachedKey, ciphertextJson);
+      } catch {
+        // Cached key didn't work — continue to fallbacks
+        aesKeys.delete(cacheKey);
+      }
+    }
+
+    // ── Strategy 2: Derive from envelope sender key (KEY FIX) ───────
+    // The envelope's `sk` field is the sender's public key AT ENCRYPTION TIME.
+    // If the sender's identity key has since rotated, this is the only way
+    // to derive the correct shared secret for this specific message.
+    if (envelopeSenderKey) {
+      try {
+        const derivedKey = isV5
+          ? await deriveEpochAESKey(privateKey, envelopeSenderKey, msgEpoch)
+          : await deriveAESKey(privateKey, envelopeSenderKey);
+        const result = isV5
+          ? await decryptTextV5(derivedKey, ciphertextJson)
+          : await decryptText(derivedKey, ciphertextJson);
+        // Success! Cache this key for future messages from the same sender+epoch
+        aesKeys.set(cacheKey, derivedKey);
+        set({ aesKeys: new Map(aesKeys) });
+        // Archive in background
+        archiveConversationKey(derivedKey, remoteUserId, msgEpoch || 1, envelopeSenderKey).catch(() => {});
+        return result;
+      } catch {
+        logger.debug('[E2EE] Envelope sender key derivation failed, trying more strategies...');
+      }
+    }
+
+    // ── Strategy 3: Try current remote public key from server ───────
+    try {
+      const remotePub = await fetchRemotePublicKey(remoteUserId);
+      if (remotePub) {
+        if (userId) trackRemoteKey(userId, remoteUserId, remotePub);
+        const derivedKey = isV5
+          ? await deriveEpochAESKey(privateKey, remotePub, msgEpoch)
+          : await deriveAESKey(privateKey, remotePub);
+        const result = isV5
+          ? await decryptTextV5(derivedKey, ciphertextJson)
+          : await decryptText(derivedKey, ciphertextJson);
+        aesKeys.set(cacheKey, derivedKey);
+        set({ aesKeys: new Map(aesKeys) });
+        archiveConversationKey(derivedKey, remoteUserId, msgEpoch || 1, remotePub).catch(() => {});
+        return result;
+      }
+    } catch {
+      // Continue to next strategy
+    }
+
+    // ── Strategy 4: Try ALL historical local key pairs with envelope key ─
+    // If OUR identity key rotated, old messages used our old private key.
+    // The envelope sender key is correct but we need the matching private key.
+    if (envelopeSenderKey && userId) {
+      const history = loadKeyHistory(userId);
+      for (const historicalKP of history) {
+        if (historicalKP.privateKey === privateKey) continue; // already tried
         try {
-          aesKey = await deriveEpochAESKey(privateKey, remotePub, msgEpoch);
-          aesKeys.set(cacheKey, aesKey);
+          const derivedKey = isV5
+            ? await deriveEpochAESKey(historicalKP.privateKey, envelopeSenderKey, msgEpoch)
+            : await deriveAESKey(historicalKP.privateKey, envelopeSenderKey);
+          const result = isV5
+            ? await decryptTextV5(derivedKey, ciphertextJson)
+            : await decryptText(derivedKey, ciphertextJson);
+          aesKeys.set(cacheKey, derivedKey);
           set({ aesKeys: new Map(aesKeys) });
+          logger.info('[E2EE] Decrypted using historical key pair');
+          return result;
         } catch {
-          return '[Decryption failed — key derivation error]';
+          // This combination didn't work, try next
         }
       }
+    }
 
-      try {
-        return await decryptTextV5(aesKey, ciphertextJson);
-      } catch {
-        // Epoch key might be from a rotated identity key — try re-deriving
-        logger.warn('[E2EE] v5 decrypt failed, retrying with fresh key...');
-        try {
-          aesKeys.delete(cacheKey);
-          const remotePub = await fetchRemotePublicKey(remoteUserId);
-          if (!remotePub) return '[Decryption failed — missing key]';
-          aesKey = await deriveEpochAESKey(privateKey, remotePub, msgEpoch);
-          aesKeys.set(cacheKey, aesKey);
-          set({ aesKeys: new Map(aesKeys) });
-          return await decryptTextV5(aesKey, ciphertextJson);
-        } catch {
-          // Last resort: try v3 derivation (cross-version compat)
+    // ── Strategy 5: Try archived message keys from server ───────────
+    try {
+      const archivedKey = await tryArchivedMessageKeys(remoteUserId, ciphertextJson, isV5, msgEpoch);
+      if (archivedKey) return archivedKey;
+    } catch {
+      // Archive fetch failed, continue
+    }
+
+    // ── Strategy 6: Try all known remote public keys × current key ──
+    if (userId) {
+      const allKnown = loadKnownRemoteKeys(userId);
+      const knownKeys = allKnown.get(remoteUserId);
+      if (knownKeys) {
+        for (const remotePub of knownKeys) {
+          if (remotePub === envelopeSenderKey) continue; // already tried in strategy 2
           try {
-            const remotePub = await fetchRemotePublicKey(remoteUserId);
-            if (!remotePub) return '[Decryption failed]';
-            const v3Key = await deriveAESKey(privateKey, remotePub);
-            return await decryptText(v3Key, ciphertextJson);
+            const derivedKey = isV5
+              ? await deriveEpochAESKey(privateKey, remotePub, msgEpoch)
+              : await deriveAESKey(privateKey, remotePub);
+            const result = isV5
+              ? await decryptTextV5(derivedKey, ciphertextJson)
+              : await decryptText(derivedKey, ciphertextJson);
+            aesKeys.set(cacheKey, derivedKey);
+            set({ aesKeys: new Map(aesKeys) });
+            logger.info('[E2EE] Decrypted using known historical remote key');
+            return result;
           } catch {
-            return '[Decryption failed]';
+            // This combination didn't work, try next
           }
         }
       }
     }
 
-    // ── v3 legacy decryption ────────────────────────────────────────
-    let aesKey = aesKeys.get(remoteUserId);
-    if (!aesKey) {
-      const remotePub = await fetchRemotePublicKey(remoteUserId);
-      if (!remotePub) return '[Cannot decrypt — missing key]';
-      aesKey = await deriveAESKey(privateKey, remotePub);
-      aesKeys.set(remoteUserId, aesKey);
-      set({ aesKeys: new Map(aesKeys) });
-    }
-
-    try {
-      return await decryptText(aesKey, ciphertextJson);
-    } catch {
-      logger.warn('[E2EE] Decrypt failed, retrying with fresh key...');
+    // ── Strategy 7: Cross-version fallback (v5 ↔ v3) ───────────────
+    if (envelopeSenderKey) {
       try {
-        aesKeys.delete(remoteUserId);
-        const remotePub = await fetchRemotePublicKey(remoteUserId);
-        if (!remotePub) return '[Decryption failed — missing key]';
-        aesKey = await deriveAESKey(privateKey, remotePub);
-        aesKeys.set(remoteUserId, aesKey);
+        const crossKey = isV5
+          ? await deriveAESKey(privateKey, envelopeSenderKey)        // try v3 derivation on v5 message
+          : await deriveEpochAESKey(privateKey, envelopeSenderKey, 1); // try v5-epoch-1 on v3 message
+        const result = isV5
+          ? await decryptText(crossKey, ciphertextJson)   // v3 decrypt
+          : await decryptTextV5(crossKey, ciphertextJson); // v5 decrypt
+        aesKeys.set(cacheKey, crossKey);
         set({ aesKeys: new Map(aesKeys) });
-        return await decryptText(aesKey, ciphertextJson);
-      } catch (retryErr) {
-        logger.error('[E2EE] Decrypt retry failed:', retryErr);
-        return '[Decryption failed]';
+        logger.info('[E2EE] Decrypted using cross-version fallback');
+        return result;
+      } catch {
+        // Cross-version also failed
       }
     }
+
+    // ── All strategies exhausted — queue for retry, NEVER hard-fail ─
+    logger.warn(`[E2EE] All ${7} decryption strategies failed for message from ${remoteUserId}`);
+    return '🔒 Decrypting...';
   },
 
   /**
@@ -735,6 +924,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   /**
    * Decrypt a group message from a specific sender.
    * Auto-fetches missing sender keys from server.
+   * NEVER returns "[Decryption failed]" — queues for retry.
    */
   decryptGroup: async (senderId: string, conversationId: string, ciphertextJson: string): Promise<string> => {
     if (!isGroupEncryptedMessage(ciphertextJson)) {
@@ -750,25 +940,24 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         try {
           return await decryptWithSenderKey(ownKey.cryptoKey, ciphertextJson);
         } catch {
-          logger.warn('[E2EE] Failed to decrypt own group message');
-          return '[Decryption failed]';
+          logger.warn('[E2EE] Failed to decrypt own group message with current key');
+          // Don't return failure — try other strategies below
         }
       }
     }
 
-    // Try stored sender key
+    // Strategy 1: Try stored sender key
     const convMap = groupSenderKeys.get(conversationId);
     const senderKeyInfo = convMap?.get(senderId);
     if (senderKeyInfo) {
       try {
         return await decryptWithSenderKey(senderKeyInfo.cryptoKey, ciphertextJson);
       } catch {
-        // Key might be outdated/rotated — try fetching fresh
         logger.warn('[E2EE] Stored key failed, fetching fresh key...');
       }
     }
 
-    // Auto-fetch sender key from server
+    // Strategy 2: Auto-fetch sender key from server
     try {
       await get().fetchSenderKeyForUser(conversationId, senderId);
       const updatedConvMap = get().groupSenderKeys.get(conversationId);
@@ -780,12 +969,32 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       logger.warn('[E2EE] Failed to fetch sender key for', senderId);
     }
 
-    // Final fallback: try 1:1 decryption (backward compat with pre-sender-key messages)
+    // Strategy 3: Fetch ALL group sender keys (bulk refresh)
     try {
-      return await get().decrypt(senderId, ciphertextJson);
+      await get().fetchGroupSenderKeys(conversationId);
+      const refreshedConvMap = get().groupSenderKeys.get(conversationId);
+      const refreshedKey = refreshedConvMap?.get(senderId);
+      if (refreshedKey) {
+        return await decryptWithSenderKey(refreshedKey.cryptoKey, ciphertextJson);
+      }
     } catch {
-      return '[Cannot decrypt — missing sender key]';
+      logger.warn('[E2EE] Bulk sender key fetch failed');
     }
+
+    // Strategy 4: Fallback to 1:1 decryption (backward compat with pre-sender-key messages)
+    try {
+      const result = await get().decrypt(senderId, ciphertextJson);
+      // Only return if it's not a failure placeholder
+      if (!result.startsWith('🔒') && !result.startsWith('🔐') && !result.startsWith('⏳')) {
+        return result;
+      }
+    } catch {
+      // 1:1 fallback also failed
+    }
+
+    // Never hard-fail — return retry placeholder
+    logger.warn(`[E2EE] All group decryption strategies failed for message from ${senderId}`);
+    return '🔒 Decrypting...';
   },
 
   /**
@@ -871,6 +1080,9 @@ async function fetchRemotePublicKey(remoteUserId: string): Promise<string | null
     const key = res.data.identity_keys?.[0]?.identity_key;
     if (key) {
       remoteKeyCache.set(remoteUserId, { key, fetchedAt: Date.now() });
+      // Track every key we've ever seen for this user
+      const userId = useCryptoStore.getState().userId;
+      if (userId) trackRemoteKey(userId, remoteUserId, key);
       return key;
     }
   } catch { /* fall through */ }
@@ -880,12 +1092,110 @@ async function fetchRemotePublicKey(remoteUserId: string): Promise<string | null
     const key = res.data.identity_key || null;
     if (key) {
       remoteKeyCache.set(remoteUserId, { key, fetchedAt: Date.now() });
+      const userId = useCryptoStore.getState().userId;
+      if (userId) trackRemoteKey(userId, remoteUserId, key);
     }
     return key;
   } catch {
     logger.error('[E2EE] Failed to fetch public key for', remoteUserId);
     return null;
   }
+}
+
+/**
+ * Force-refresh a remote user's public key (bypasses cache).
+ * Called when all cached strategies fail and we want the absolute latest key.
+ */
+async function fetchRemotePublicKeyFresh(remoteUserId: string): Promise<string | null> {
+  remoteKeyCache.delete(remoteUserId);
+  return fetchRemotePublicKey(remoteUserId);
+}
+
+// ========== Archived message key fallback ==========
+
+/**
+ * Try to decrypt a message using archived message keys stored on the server.
+ * This handles the case where the current identity key pair can't derive
+ * the correct AES key (e.g., key rotated since the message was sent).
+ *
+ * WhatsApp/Signal principle: message keys are stored so historical messages
+ * remain decryptable even after key rotation.
+ */
+async function tryArchivedMessageKeys(
+  remoteUserId: string,
+  ciphertextJson: string,
+  isV5: boolean,
+  msgEpoch: number,
+): Promise<string | null> {
+  const userId = useCryptoStore.getState().userId;
+  const privateKey = useCryptoStore.getState().privateKey;
+  if (!userId || !privateKey) return null;
+
+  try {
+    // Find the conversation for this remote user
+    const convRes = await api.get('/messages/conversations/list');
+    const conversations = convRes.data.conversations || [];
+    const conv = conversations.find((c: { type: string; other_user?: { user_id: string } }) =>
+      c.type === 'one_to_one' && c.other_user?.user_id === remoteUserId
+    );
+    if (!conv) return null;
+
+    // Fetch archived keys for this conversation
+    const archiveRes = await api.get(`/keys/message-keys/${conv.id}`);
+    const archives = archiveRes.data?.archives || [];
+    if (archives.length === 0) return null;
+
+    // Derive the archive encryption key (same derivation as archiveConversationKey)
+    const archiveKey = await deriveArchiveEncryptionKey(privateKey);
+
+    // Also try with historical key pairs
+    const keyPairs = [{ privateKey }, ...loadKeyHistory(userId)];
+
+    for (const archive of archives) {
+      // Try to decrypt the archived AES key
+      try {
+        const restoredAESKey = await decryptKeyFromArchive(
+          archive.encrypted_key,
+          archive.iv,
+          archiveKey,
+        );
+
+        // Try decrypting the message with this restored key
+        try {
+          const result = isV5
+            ? await decryptTextV5(restoredAESKey, ciphertextJson)
+            : await decryptText(restoredAESKey, ciphertextJson);
+          logger.info(`[E2EE] Decrypted using archived key (epoch ${archive.key_epoch})`);
+          return result;
+        } catch {
+          // This archived key didn't work for this specific message, try next
+        }
+      } catch {
+        // Archive decryption failed (different backup key), try with historical keys
+        for (const kp of keyPairs) {
+          try {
+            const altArchiveKey = await deriveArchiveEncryptionKey(kp.privateKey);
+            const restoredAESKey = await decryptKeyFromArchive(
+              archive.encrypted_key,
+              archive.iv,
+              altArchiveKey,
+            );
+            const result = isV5
+              ? await decryptTextV5(restoredAESKey, ciphertextJson)
+              : await decryptText(restoredAESKey, ciphertextJson);
+            logger.info(`[E2EE] Decrypted using archived key with historical key pair`);
+            return result;
+          } catch {
+            // Continue trying
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug('[E2EE] Archive key fetch attempt failed:', err);
+  }
+
+  return null;
 }
 
 // ========== Server backup helpers ==========
